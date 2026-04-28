@@ -19,7 +19,7 @@ class ProcessingParams(BaseModel):
     max_scenes: int = 100
     tile_size: int = 512
     overlap: int = 32
-    use_mock: bool = False  # По умолчанию используем реальную обработку
+    use_mock: bool = True
 
 class JobResponse(BaseModel):
     job_id: str
@@ -57,7 +57,35 @@ async def process_upload(
 
 @app.get("/api/jobs/{job_id}")
 async def get_job_status(job_id: str):
-    result = celery_app.AsyncResult(job_id)
+    # Ищем задачу по job_id в названии задачи или используем task_id из params
+    inspect = celery_app.control.inspect()
+    active = inspect.active() or {}
+    reserved = inspect.reserved() or {}
+
+    # Проверяем активные и зарезервированные задачи
+    all_tasks = []
+    for worker_tasks in list(active.values()) + list(reserved.values()):
+        all_tasks.extend(worker_tasks)
+
+    # Ищем задачу с matching job_id
+    task_id = None
+    for task in all_tasks:
+        if task.get('name') == 'app.tasks.process_uploaded_image':
+            args = task.get('args', [])
+            if job_id in str(args):
+                task_id = task.get('id')
+                break
+
+    # Если не нашли в активных, пробуем просто по job_id (для завершенных)
+    if not task_id:
+        result = celery_app.AsyncResult(job_id)
+        if result.state != "PENDING":
+            task_id = job_id
+
+    if not task_id:
+        return {"job_id": job_id, "status": "pending"}
+
+    result = celery_app.AsyncResult(task_id)
 
     if result.state == "PENDING":
         return {"job_id": job_id, "status": "pending"}
