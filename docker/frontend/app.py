@@ -4,6 +4,7 @@ import json
 import os
 import glob
 from pathlib import Path
+import base64
 
 API_URL = os.getenv("API_URL", "http://api-processor:8000")
 DATA_DIR = os.getenv("FRONTEND_DATA_DIR", "/app/data/processed")
@@ -24,13 +25,21 @@ def check_status(job_id):
 def get_tiles(job_id):
     return requests.get(f"{API_URL}/api/jobs/{job_id}/tiles")
 
+def get_image_base64(image_path):
+    """Converts image to base64 for display"""
+    try:
+        with open(image_path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return None
+
 with tab1:
     st.header("Upload image for enhancement")
     uploaded = st.file_uploader("Select file", type=["tif", "tiff", "SAFE", "png", "jpg"])
-    
+
     if uploaded:
         st.info(f"Selected: {uploaded.name}")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             tile_size = st.selectbox("Tile size", [256, 512, 1024], index=1)
@@ -38,7 +47,7 @@ with tab1:
         with col2:
             use_mock = st.checkbox("Use mock model (faster)", value=True)
             blending = st.selectbox("Blending", ["gaussian", "average", "none"], index=0)
-        
+
         if st.button("Start Processing", type="primary"):
             with st.spinner("Uploading and queuing task..."):
                 params = {
@@ -59,28 +68,72 @@ with tab1:
                     st.error(f"Network error: {e}")
 
 with tab2:
-    st.header("Direct API access")
-    st.code(f"""curl -X POST "{API_URL}/api/process/upload" \\
+    st.header("Direct API access via HTTP")
+    st.markdown("""
+    This tab allows you to interact with the processing API directly.
+    Upload an image and send it to the backend for processing.
+    """)
+
+    st.code(f"""# Example curl command
+curl -X POST "{API_URL}/api/process/upload" \\
   -F "file=@your_image.png" \\
-  -F 'params={{"tile_size":512,"overlap":32,"use_mock":true}}'""", language="bash")
-    
-    api_file = st.file_uploader("File for API test", type=["tif", "tiff", "SAFE", "png", "jpg"], key="api_uploader")
-    
+  -F 'params={{"tile_size":512,"overlap":32,"use_mock":true}}'
+
+# Response will contain job_id for status checking
+""", language="bash")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        api_file = st.file_uploader("Upload file for API test", type=["tif", "tiff", "SAFE", "png", "jpg"], key="api_uploader")
+    with col2:
+        api_tile_size = st.selectbox("Tile size", [256, 512, 1024], index=1, key="api_tile")
+        api_overlap = st.selectbox("Overlap", [16, 32, 64], index=1, key="api_overlap")
+        api_use_mock = st.checkbox("Use mock", value=True, key="api_mock")
+
     if api_file and st.button("Send via API", type="primary", key="api_send"):
         with st.spinner("Requesting..."):
             try:
-                params = {"tile_size": 512, "overlap": 32, "use_mock": True}
+                params = {
+                    "tile_size": api_tile_size,
+                    "overlap": api_overlap,
+                    "use_mock": api_use_mock
+                }
                 resp = upload_file(api_file, params)
-                st.json(resp.json())
+
                 if resp.status_code == 200:
-                    st.session_state["last_job_id"] = resp.json()["job_id"]
+                    result = resp.json()
+                    st.success("Request successful!")
+                    st.json(result)
+                    st.session_state["last_job_id"] = result["job_id"]
+
+                    # Show next steps
+                    st.info(f"""
+                    **Next steps:**
+                    1. Job ID: `{result['job_id']}`
+                    2. Go to 'Results and Tiles' tab
+                    3. Paste the Job ID and click 'Refresh Status'
+                    """)
+                else:
+                    st.error(f"API error ({resp.status_code}): {resp.text}")
             except Exception as e:
                 st.error(f"Error: {e}")
 
+    # API endpoints documentation
+    st.subheader("Available Endpoints")
+    st.markdown(f"""
+    | Method | Endpoint | Description |
+    |--------|----------|-------------|
+    | POST | `/api/process/upload` | Upload image for processing |
+    | GET | `/api/jobs/{{job_id}}` | Get job status |
+    | GET | `/api/jobs/{{job_id}}/tiles` | Get tiles list |
+    | GET | `/api/health` | Health check |
+    """)
+
 with tab3:
     st.header("Monitor and view results")
+
     job_input = st.text_input("Job ID", value=st.session_state.get("last_job_id", ""))
-    
+
     if st.button("Refresh Status", type="primary"):
         if not job_input:
             st.warning("Enter Job ID")
@@ -90,48 +143,140 @@ with tab3:
                     resp = check_status(job_input)
                     if resp.status_code == 200:
                         data = resp.json()
-                        st.json(data)
+
+                        # Display status prominently
                         status = data.get("status")
-                        
+                        status_colors = {
+                            "completed": "success",
+                            "failed": "error",
+                            "processing": "info",
+                            "pending": "warning",
+                            "queued": "warning"
+                        }
+                        status_color = status_colors.get(status, "info")
+
+                        if status_color == "success":
+                            st.success(f"✅ Status: **{status.upper()}**")
+                        elif status_color == "error":
+                            st.error(f"❌ Status: **{status.upper()}**")
+                        elif status_color == "info":
+                            st.info(f"🔄 Status: **{status.upper()}**")
+                        else:
+                            st.warning(f"⏳ Status: **{status.upper()}**")
+
+                        # Show full response in expander
+                        with st.expander("Raw Response", expanded=False):
+                            st.json(data)
+
                         if status == "completed":
-                            st.success("Processing complete")
                             res_info = data.get("result", {})
-                            
+
                             if res_info.get("is_mock"):
-                                st.warning("Displaying mock results (test file detected)")
-                            
+                                st.warning("ℹ️ Displaying mock results (test file detected)")
+
+                            # Display HDFS paths if available
+                            hdfs_output = res_info.get("hdfs_output")
+                            hdfs_tiles = res_info.get("hdfs_tiles_dir")
+                            if hdfs_output:
+                                st.info(f"**HDFS Output:** `{hdfs_output}`")
+                            if hdfs_tiles:
+                                st.info(f"**HDFS Tiles:** `{hdfs_tiles}`")
+
                             job_dir = Path(DATA_DIR) / job_input
                             tiles_dir = job_dir / "tiles"
-                            
+
+                            # Display enhanced result
                             result_files = list(job_dir.glob("result*.png"))
                             if result_files:
-                                st.image(str(result_files[0]), caption="Enhanced result", use_container_width=True)
-                            
+                                st.subheader("📸 Enhanced Result")
+                                st.image(str(result_files[0]), caption="Enhanced image", use_container_width=True)
+
+                                # Download button
+                                with open(result_files[0], "rb") as f:
+                                    st.download_button(
+                                        label="📥 Download Result",
+                                        data=f.read(),
+                                        file_name=result_files[0].name,
+                                        mime="image/png"
+                                    )
+
+                            # Display tiles in grid
                             if tiles_dir.exists():
-                                tiles = sorted(tiles_dir.glob("*.png"))
-                                if tiles:
-                                    st.subheader(f"Tiles ({len(tiles)})")
-                                    cols = st.columns(min(4, len(tiles)))
-                                    for i, t_path in enumerate(tiles):
-                                        with cols[i % 4]:
-                                            st.image(str(t_path), caption=t_path.name, use_container_width=True)
+                                original_tiles = sorted(tiles_dir.glob("*_original.png"))
+                                enhanced_tiles = sorted(tiles_dir.glob("*_enhanced.png"))
+                                all_tiles = sorted(tiles_dir.glob("*.png"))
+
+                                if all_tiles:
+                                    st.subheader(f"🔲 Tiles ({len(all_tiles)} total)")
+
+                                    # Create tabs for original vs enhanced
+                                    tile_tab1, tile_tab2 = st.tabs(["Original Tiles", "Enhanced Tiles"])
+
+                                    with tile_tab1:
+                                        if original_tiles:
+                                            cols = st.columns(min(4, len(original_tiles)))
+                                            for i, t_path in enumerate(original_tiles):
+                                                with cols[i % 4]:
+                                                    st.image(str(t_path), caption=t_path.name, use_container_width=True)
+                                        else:
+                                            st.info("No original tiles found")
+
+                                    with tile_tab2:
+                                        if enhanced_tiles:
+                                            cols = st.columns(min(4, len(enhanced_tiles)))
+                                            for i, t_path in enumerate(enhanced_tiles):
+                                                with cols[i % 4]:
+                                                    st.image(str(t_path), caption=t_path.name, use_container_width=True)
+                                        else:
+                                            st.info("No enhanced tiles found")
+
+                                    # Tile statistics
+                                    st.subheader("📊 Tile Statistics")
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("Total Tiles", len(all_tiles))
+                                    with col2:
+                                        st.metric("Original Tiles", len(original_tiles))
+                                    with col3:
+                                        st.metric("Enhanced Tiles", len(enhanced_tiles))
+
                             elif status in ["pending", "processing", "STARTED", "PENDING"]:
                                 st.info("Processing in progress...")
                         elif status == "failed":
-                            st.error(f"Error: {data.get('error')}")
+                            st.error(f"❌ Error: {data.get('error', 'Unknown error')}")
+                            if "traceback" in data:
+                                with st.expander("Traceback"):
+                                    st.code(data["traceback"])
                         else:
-                            st.info(f"Status: {status}")
+                            st.info(f"⏳ Status: {status}")
                     else:
                         st.error(f"Request error: {resp.status_code}")
                 except Exception as e:
                     st.error(f"Failed to get status: {e}")
 
+    # Recent jobs section
+    if Path(DATA_DIR).exists():
+        st.subheader("📁 Recent Jobs")
+        job_dirs = sorted([d for d in Path(DATA_DIR).iterdir() if d.is_dir()], key=lambda x: x.stat().st_mtime, reverse=True)[:5]
+        if job_dirs:
+            for jd in job_dirs:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"`{jd.name}`")
+                with col2:
+                    if st.button("View", key=f"view_{jd.name}"):
+                        st.session_state["last_job_id"] = jd.name
+                        st.rerun()
+        else:
+            st.info("No processed jobs found")
+
 st.sidebar.header("Info")
 st.sidebar.markdown("""
-- Upload: Queues image processing task via Celery
-- API: Direct endpoint access with curl examples
-- Results: Status check, enhanced image and tiles preview
-- Mock files: Upload files with 'mock', 'test', 'demo' in name for placeholder results
+- **Upload**: Queues image processing task via Celery
+- **API**: Direct endpoint access with curl examples
+- **Results**: Status check, enhanced image and tiles preview
+- **Mock files**: Upload files with 'mock', 'test', 'demo' in name for placeholder results
+- **HDFS**: Results are also saved to HDFS for distributed storage
 """)
 
 try:
