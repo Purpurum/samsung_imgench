@@ -37,8 +37,8 @@ RUN if [ -f /tmp/snap-installer.sh ] && [ -s /tmp/snap-installer.sh ]; then \
 # === Python-зависимости приложения ===
 RUN pip install --no-cache-dir --break-system-packages \
     "celery==5.3.6" "redis==5.0.1" "boto3==1.34.34" \
-    "shapely>=2.0.3" "Pillow>=10.0.0"
-	
+    "shapely>=2.0.3" "Pillow>=10.0.0" \
+    "pyspark==3.5.0" "pyarrow>=14.0.0"
 
 # === Установка и конфигурация esa_snappy ===
 RUN export JAVA_TOOL_OPTIONS="-Djava.awt.headless=true -Djava.security.manager=allow" && \

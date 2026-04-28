@@ -22,7 +22,7 @@ model:
   # КРИТИЧНО: уменьшено до 2 для снижения пика памяти при инференсе
   batch_size: 2
   # use_mock=true для учебной среды (без GPU и тяжёлых зависимостей)
-  use_mock: true
+  use_mock: false
 
 storage:
   hdfs_root: "hdfs://namenode:9000"
@@ -35,45 +35,45 @@ storage:
 
 spark:
   app_name: "SatlasImageEnhancement"
-  
-  # 🔥 КРИТИЧНО: Ограничиваем параллелизм для local-режима
-  # local[2] = максимум 2 потока инференса одновременно
-  # Это предотвращает переполнение памяти при 462 тайлах
-  master: "local[1]"
-  
+
+  # 🔥 КРИТИЧНО: используем Spark-кластер для распределённой обработки
+
+
+  master: "spark://spark-master:7077"
+
   # Память JVM для драйвера (отдельно от Python-процесса)
   driver_memory: "6g"
-  
+
   # 🔥 КРИТИЧНО: 0 = отключить лимит на размер результата .collect()
   # По умолчанию 1024m — Spark abort'ит задачу при больших данных
   driver_maxResultSize: "0"
-  
-  # В local-режиме "исполнители" — это те же потоки, память делится
+
+  # В режиме кластера каждый воркер получает свою память
   executor_memory: "4g"
-  executor_cores: 4
-  
+  executor_cores: 2
+
   # Надёжность: сколько раз перепробовать упавшую задачу
   task_max_failures: 3
-  
+
   # Таймаут для передачи больших объектов (модель, конфиги)
   broadcast_timeout: 600
-  
-  # Количество партиций: должно быть кратно master (local[2] → 2,4,6...)
-  # 4 — оптимально для 462 тайлов: ~115 задач на поток
-  num_partitions: 2
-  
+
+  # Количество партиций: оптимально для параллелизма в кластере
+
+  num_partitions: 4
+
   # 🔥 КРИТИЧНО: одна задача на ядро, чтобы не было гонки за модель в памяти
   task_cpus: 1
-  
+
   # Переиспользовать Python-воркеры между задачами (экономит ~20% памяти)
   python_worker_reuse: true
-  
+
   # Сжимать numpy-массивы при передаче между драйвером и воркерами
   compress_arrays: true
-  
-  # Доп. настройки для стабильности в local-режиме
-  spark_default_parallelism: 4
-  spark_sql_shuffle_partitions: 4
+
+  # Доп. настройки для стабильности в cluster-режиме
+  spark_default_parallelism: 8
+  spark_sql_shuffle_partitions: 8
 
 logging:
   level: "INFO"

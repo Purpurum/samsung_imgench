@@ -208,6 +208,7 @@ services:
       - SPARK_HOME=/opt/spark
       - PYSPARK_PYTHON=python3
       - ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native
+      - SPARK_MASTER=spark://spark-master:7077
     volumes:
       - shared_data:/data/processed
       - ../src:/app/src:ro
@@ -220,6 +221,7 @@ services:
     depends_on:
       - redis
       - namenode
+      - spark-master
       - api-processor
     deploy:
       resources:

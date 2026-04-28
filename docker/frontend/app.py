@@ -15,15 +15,33 @@ st.title("Satellite Image Quality Enhancer")
 tab1, tab2, tab3 = st.tabs(["Upload and Process", "API Direct Access", "Results and Tiles"])
 
 def upload_file(file_obj, params_dict=None):
+    """Отправка файла на обработку через API"""
     files = {"file": (file_obj.name, file_obj.getvalue())}
     data = {"params": json.dumps(params_dict or {})}
-    return requests.post(f"{API_URL}/api/process/upload", files=files, data=data)
+    try:
+        response = requests.post(f"{API_URL}/api/process/upload", files=files, data=data, timeout=30)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"API request failed: {e}")
 
 def check_status(job_id):
-    return requests.get(f"{API_URL}/api/jobs/{job_id}")
+    """Проверка статуса задачи"""
+    try:
+        response = requests.get(f"{API_URL}/api/jobs/{job_id}", timeout=10)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Status check failed: {e}")
 
 def get_tiles(job_id):
-    return requests.get(f"{API_URL}/api/jobs/{job_id}/tiles")
+    """Получение списка тайлов для задачи"""
+    try:
+        response = requests.get(f"{API_URL}/api/jobs/{job_id}/tiles", timeout=10)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Get tiles failed: {e}")
 
 def get_image_base64(image_path):
     """Converts image to base64 for display"""
@@ -45,7 +63,7 @@ with tab1:
             tile_size = st.selectbox("Tile size", [256, 512, 1024], index=1)
             overlap = st.selectbox("Overlap", [16, 32, 64], index=1)
         with col2:
-            use_mock = st.checkbox("Use mock model (faster)", value=True)
+            use_mock = st.checkbox("Use mock model (faster)", value=False)  # По умолчанию реальная обработка
             blending = st.selectbox("Blending", ["gaussian", "average", "none"], index=0)
 
         if st.button("Start Processing", type="primary"):
@@ -88,7 +106,7 @@ curl -X POST "{API_URL}/api/process/upload" \\
     with col2:
         api_tile_size = st.selectbox("Tile size", [256, 512, 1024], index=1, key="api_tile")
         api_overlap = st.selectbox("Overlap", [16, 32, 64], index=1, key="api_overlap")
-        api_use_mock = st.checkbox("Use mock", value=True, key="api_mock")
+        api_use_mock = st.checkbox("Use mock", value=False, key="api_mock")  # По умолчанию реальная обработка
 
     if api_file and st.button("Send via API", type="primary", key="api_send"):
         with st.spinner("Requesting..."):

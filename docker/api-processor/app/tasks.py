@@ -219,8 +219,8 @@ def process_uploaded_image(
     out_dir.mkdir(parents=True, exist_ok=True)
     tiles_dir.mkdir(exist_ok=True)
 
-    is_mock_file = any(k in filename.lower() for k in ["mock", "test", "заглушка", "demo", "placeholder"])
-    use_mock = params.get("use_mock", True) or is_mock_file
+    # Определяем режим обработки: mock только если явно указано в параметрах
+    use_mock = params.get("use_mock", False)
 
     # Загружаем конфигурацию из settings.yaml
     try:
@@ -266,8 +266,12 @@ def process_uploaded_image(
     # Инициализируем HDFS клиент
     hdfs_client = _get_hdfs_client()
     hdfs_output_path = f"/data/output/{job_id}"
+    log.info(f"HDFS client initialized: {hdfs_client is not None}")
+    log.info(f"HDFS output path: {hdfs_output_path}")
+    log.info(f"Processing mode: use_mock={use_mock}")
 
-    if is_mock_file:
+    if use_mock:
+        log.info(f"Using mock processing for job {job_id}")
         base = np.zeros((512, 512, 3), dtype=np.uint8)
         base[100:400, 100:400] = [64, 64, 64]
         enhanced = np.ones((512, 512, 3), dtype=np.uint8) * 128
@@ -276,11 +280,13 @@ def process_uploaded_image(
         for i in range(4):
             tile_path = tiles_dir / f"tile_{i:03d}_mock.png"
             Image.fromarray(base).save(tile_path)
+            log.info(f"Saved mock tile to {tile_path}")
 
             # Сохраняем тайлы в HDFS
             if hdfs_client:
                 try:
                     hdfs_client.put_image(base, f"{hdfs_output_path}/tiles/tile_{i:03d}_mock.png")
+                    log.info(f"Saved mock tile to HDFS: {hdfs_tile_path}")
                 except Exception as e:
                     log.warning(f"Failed to save tile to HDFS: {e}")
 
