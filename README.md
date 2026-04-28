@@ -1,6 +1,6 @@
 # Satlas Image Enhancement
 
-Распределённая система обработки спутниковых снимков на базе **Apache Spark** и **Hadoop (HDFS)** с интеграцией нейросетевой модели улучшения качества изображений. Реализация учебного ТЗ.
+Распределённая система обработки спутниковых снимков на базе **Apache Spark** и **Hadoop (HDFS)** с интеграцией нейросетевой модели улучшения качества изображений. Реализация учебного ТЗ с полным production-стеком: REST API, асинхронная обработка через Celery, Web UI на Streamlit и мониторинг задач.
 
 ---
 
@@ -17,6 +17,7 @@
 9. [Тестирование](#тестирование)
 10. [Переход на реальную модель Satlas](#переход-на-реальную-модель-satlas)
 11. [Диагностика проблем](#диагностика-проблем)
+12. [Соответствие ТЗ](#соответствие-тз)
 
 ---
 
@@ -30,7 +31,11 @@
 - Распределённый инференс через `mapPartitions` — модель грузится **один раз на воркер-процесс** и переиспользуется.
 - Gaussian-блендинг на стыках тайлов — без видимых швов.
 - Два режима работы модели: `mock` (лёгкий CPU-алгоритм, готов «из коробки») и `production` (реальная модель `satlaspretrain_models`).
-- Полная Docker-инфраструктура: NameNode, DataNode, Spark Master, два Spark Worker, Jupyter — поднимается одной командой.
+- Полная Docker-инфраструктура: NameNode, DataNode, Spark Master, два Spark Worker, Jupyter, FastAPI, Celery, Redis, Streamlit, Flower.
+- REST API для интеграции с внешними системами.
+- Асинхронная обработка задач через очередь Celery.
+- Веб-интерфейс для пользователей (Streamlit).
+- Мониторинг очереди задач через Flower.
 - Модульные тесты (16 штук, покрывают тайлинг, сборку, метрики, mock-модель).
 
 ---
@@ -39,10 +44,22 @@
 
 ```
                 ┌──────────────────────┐
-                │      Jupyter Lab     │   ← пользовательский вход (8888)
-                │  (Spark-драйвер)     │
+                │   Streamlit Frontend │   ← пользовательский UI (8501)
+                │      (8501)          │
                 └──────────┬───────────┘
-                           │  submit
+                           │ HTTP API
+                           ▼
+                ┌──────────────────────┐
+                │   FastAPI Processor  │   ← REST API (8000)
+                │      (8000)          │
+                └──────────┬───────────┘
+                           │ задачи
+                           ▼
+                ┌──────────────────────┐
+                │    Celery Worker     │   ← асинхронная обработка
+                │   (Spark + HDFS)     │
+                └──────────┬───────────┘
+                           │
                            ▼
               ┌────────────────────────┐
               │   Spark Master (7077)  │
@@ -64,6 +81,34 @@
              │  /data/output/         │
              │  /data/metadata/       │
              └────────────────────────┘
+
+                ┌──────────────────────┐
+                │        Redis         │   ← брокер Celery
+                │       (6379)         │
+                └──────────────────────┘
+
+                ┌──────────────────────┐
+                │       Flower         │   ← мониторинг Celery (5555)
+                │       (5555)         │
+                └──────────────────────┘
+```
+
+**Альтернативный вход:** Jupyter Lab для интерактивной разработки и тестирования:
+
+```
+                ┌──────────────────────┐
+                │      Jupyter Lab     │   ← интерактивный режим (8888)
+                │  (Spark-драйвер)     │
+                └──────────┬───────────┘
+                           │  submit
+                           ▼
+              ┌────────────────────────┐
+              │   Spark Master (7077)  │
+              └──────┬────────┬────────┘
+                     │        │
+             ┌───────▼──┐  ┌──▼───────┐
+             │ Worker 1 │  │ Worker 2 │
+             └──────────┘  └──────────┘
 ```
 
 **Поток данных для одного снимка:**
@@ -88,6 +133,13 @@ satlas-project/
 ├── data/
 │   └── samples/                        # Тестовые снимки (генерируются скриптом)
 ├── docker/
+│   ├── api-processor/
+│   │   ├── Dockerfile                  # FastAPI + Celery образ
+│   │   ├── Dockerfile.celery           # Celery worker образ
+│   │   └── app/                        # FastAPI приложение
+│   ├── frontend/
+│   │   ├── Dockerfile                  # Streamlit образ
+│   │   └── app.py                      # Streamlit UI
 │   ├── Dockerfile.jupyter              # Образ для Jupyter + драйвера
 │   ├── Dockerfile.spark                # Образ для Spark Master/Workers
 │   └── docker-compose.yml              # Оркестрация всего стека
@@ -142,12 +194,15 @@ make run
 
 | URL | Сервис |
 |---|---|
-| http://localhost:8888 | Jupyter Lab (без пароля) |
+| http://localhost:8501 | Streamlit Frontend (основной UI) |
+| http://localhost:8000 | FastAPI Processor (REST API) |
+| http://localhost:8888 | Jupyter Lab (для разработки) |
 | http://localhost:8080 | Spark Master UI |
 | http://localhost:9870 | HDFS NameNode UI |
 | http://localhost:4040 | Spark Application UI (во время задачи) |
+| http://localhost:5555 | Flower (мониторинг Celery) |
 
-В Jupyter откройте `notebooks/demo_pipeline.ipynb` и выполните все ячейки — получите визуальное сравнение исходного и обработанного снимка.
+В браузере откройте http://localhost:8501 для работы с основным интерфейсом. Для интерактивной разработки используйте Jupyter по адресу http://localhost:8888 и ноутбук `notebooks/demo_pipeline.ipynb`.
 
 Остановить всё: `make down`. Удалить и данные HDFS: `make clean`.
 
@@ -237,19 +292,37 @@ JSON-метаданные содержат: пути, формы, парамет
 
 ## WebUI кластера
 
+- **Streamlit Frontend (8501)** — основной пользовательский интерфейс для загрузки и обработки снимков.
+- **FastAPI Processor (8000)** — REST API для программного взаимодействия (`/docs` доступен для Swagger).
 - **Spark Master (8080)** — статус воркеров, список приложений, ресурсы.
 - **HDFS NameNode (9870)** — браузер файловой системы (вкладка *Utilities → Browse the file system*), живой просмотр `/data/input/…`, `/data/output/…`. Можно скачать файлы в один клик.
 - **Spark App UI (4040)** — появляется на время работы задачи, показывает DAG, стадии, распределение тайлов по воркерам, время каждой таски.
+- **Flower (5555)** — мониторинг задач Celery: очередь, выполненные/активные задачи, воркеры.
+- **Jupyter Lab (8888)** — интерактивная разработка и отладка пайплайна.
 
 ---
 
 ## Запуск пайплайна
 
-### Вариант 1: из Jupyter
+### Вариант 1: через Web UI (Streamlit)
+
+Откройте http://localhost:8501 в браузере, загрузите изображение через интерфейс и нажмите кнопку обработки. Статус задачи отображается в реальном времени.
+
+### Вариант 2: через REST API (FastAPI)
+
+```bash
+curl -X POST http://localhost:8000/process \
+  -F "image=@/path/to/image.png" \
+  -F "image_id=SAT_20240420_001"
+```
+
+Swagger-документация доступна по адресу http://localhost:8000/docs.
+
+### Вариант 3: из Jupyter
 
 Открыть `notebooks/demo_pipeline.ipynb` и выполнить ячейки — самый наглядный способ, с графиками сравнения.
 
-### Вариант 2: программно из Python
+### Вариант 4: программно из Python
 
 ```python
 from src.main import run_enhancement_pipeline
@@ -262,7 +335,7 @@ result = run_enhancement_pipeline(
 print(result["metrics"])  # {'psnr_db': ..., 'ssim': ...}
 ```
 
-### Вариант 3: через spark-submit
+### Вариант 5: через spark-submit
 
 ```bash
 bash scripts/run_pipeline.sh /app/data/samples/sat_001.png SAT_20240420_001
@@ -280,7 +353,7 @@ spark-submit \
         --config /app/config/settings.yaml
 ```
 
-### Вариант 4: массовая загрузка
+### Вариант 6: массовая загрузка
 
 ```bash
 # Положить файлы в HDFS напрямую
@@ -328,6 +401,14 @@ make test
 
 ## Диагностика проблем
 
+**`Celery worker не подключается к Redis`**
+
+Проверьте, что сервис `redis` запущен: `docker ps | grep satlas-redis`. Логи Celery: `docker logs satlas-celery`. Перезапуск: `docker restart satlas-celery satlas-redis`.
+
+**`API Processor не стартует / 502 Bad Gateway`**
+
+Сервису может не хватать памяти. Проверьте логи: `docker logs satlas-api`. Увеличьте лимит в `docker/docker-compose.yml` (секция `deploy.resources.limits`).
+
 **`NameNode не стартует` / `Connection refused hdfs://namenode:9000`**
 Дайте кластеру 30–60 секунд после `make up` — в `docker-compose.yml` прописан `healthcheck`, но на медленных машинах первый старт длиннее. Логи: `make logs`.
 
@@ -370,6 +451,11 @@ os.environ["CLASSPATH"] = subprocess.check_output(
 | Метрики PSNR/SSIM | `src/postprocessing/metrics.py` |
 | Логирование в файл и stdout | `src/utils/config.py::setup_logging` |
 | Расширяемость (замена модели) | Интерфейс `ImageEnhancer` + флаг `use_mock` |
+| REST API для обработки | `docker/api-processor/app/main.py` (FastAPI) |
+| Асинхронная обработка задач | Celery worker (`docker/api-processor/Dockerfile.celery`) |
+| Web UI для пользователей | Streamlit frontend (`docker/frontend/app.py`) |
+| Мониторинг очереди задач | Flower (порт 5555) |
+| Брокер сообщений | Redis (порт 6379) |
 
 ---
 
