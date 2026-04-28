@@ -1,0 +1,67 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    SNAP_VERSION=13.0.0 \
+    SNAP_HOME=/opt/snap \
+    LD_LIBRARY_PATH=/opt/snap/jre/lib/server \
+    PYTHONUNBUFFERED=1
+
+# === Системные зависимости ===
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget curl ca-certificates unzip fontconfig libfreetype6 libxrender1 \
+    libxtst6 libxi6 libgl1 libglib2.0-0 python3 python3-venv python3-dev \
+    python3-pip && \
+    ln -sf /usr/bin/python3 /usr/local/bin/python && \
+    ln -sf /usr/bin/pip3 /usr/local/bin/pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# === Копируем кеш-файл (если есть) ===
+COPY build-cache/esa-snap_all_linux-13.0.0.sh /tmp/snap-installer.sh
+
+# === Установка SNAP: локальный кеш → сеть ===
+RUN if [ -f /tmp/snap-installer.sh ] && [ -s /tmp/snap-installer.sh ]; then \
+        echo "📦 Используем локальный кеш SNAP" && \
+        chmod +x /tmp/snap-installer.sh && \
+        /tmp/snap-installer.sh -q -dir ${SNAP_HOME}; \
+    else \
+        echo "📦 Скачиваем SNAP ${SNAP_VERSION} из сети" && \
+        wget -q --show-progress --progress=bar:force:noscroll \
+            https://download.esa.int/step/snap/13.0/installers/esa-snap_all_linux-${SNAP_VERSION}.sh \
+            -O /tmp/snap-installer.sh && \
+        chmod +x /tmp/snap-installer.sh && \
+        /tmp/snap-installer.sh -q -dir ${SNAP_HOME}; \
+    fi && \
+    rm -f /tmp/snap-installer.sh && \
+    echo "✅ SNAP установлен в ${SNAP_HOME}"
+
+# === Python-зависимости приложения ===
+RUN pip install --no-cache-dir --break-system-packages \
+    "celery==5.3.6" "redis==5.0.1" "boto3==1.34.34" \
+    "shapely>=2.0.3" "Pillow>=10.0.0"
+	
+
+# === Установка и конфигурация esa_snappy ===
+RUN export JAVA_TOOL_OPTIONS="-Djava.awt.headless=true -Djava.security.manager=allow" && \
+    mkdir -p ${SNAP_HOME}/var/cache/modules/autoupdate && \
+    # Пробуем установить модуль с коротким таймаутом
+    timeout 60 ${SNAP_HOME}/bin/snap --nosplash --nogui --modules --install eu.esa.snap.esa.snappy || true && \
+    # Создаём конфиг вручную — это надёжнее, чем snappy-conf
+    mkdir -p /root/.snap/snap-python/esa_snappy && \
+    cat > /root/.snap/snap-python/esa_snappy/esa_snappy.ini << EOF
+[esa_snappy]
+java_max_mem: 6G
+snap_home: ${SNAP_HOME}
+python_executable: /usr/local/bin/python
+jvm_max_mem: 6G
+EOF
+
+ENV PYTHONPATH=/app/src:/root/.snap/snap-python
+
+ENV PYTHONPATH=/app/src:/root/.snap/snap-python
+
+RUN echo "java_max_mem: 6G" > /root/.snap/snap-python/esa_snappy/esa_snappy.ini
+
+WORKDIR /app
+COPY app/ ./app/
+
+CMD ["celery", "-A", "app.celery_worker.celery_app", "worker", "--loglevel=info", "--pool=solo"]

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs и артефакты
+logs/
+*.log
+data/samples/*.png
+data/local_output/
+
+# Модели (скачиваются отдельно)
+models/*.pt
+models/*.pth
+
+# Docker
+.env
+
+build-cache/
+docker/api-processor/build-cache

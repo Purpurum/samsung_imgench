@@ -1,0 +1,6 @@
+numpy==1.26.4
+streamlit==1.37.0
+requests==2.31.0
+shapely==2.0.2
+folium==0.16.0
+streamlit-folium==0.18.0

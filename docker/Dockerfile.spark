@@ -1,0 +1,27 @@
+# ============================================================
+# Образ для Spark Master/Worker с проектными Python-зависимостями.
+# PySpark-задачи требуют одинаковых версий Python-пакетов на драйвере
+# и на воркерах, поэтому образ ставит те же deps, что и Jupyter.
+# ============================================================
+FROM apache/spark:3.5.0
+
+USER root
+
+# Образ apache/spark минимальный — нужен pip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python-зависимости, которые будут использоваться в воркер-процессах
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Копируем код проекта - воркеры импортируют из него внутри mapPartitions
+WORKDIR /app
+COPY src /app/src
+COPY config /app/config
+
+ENV PYTHONPATH=/app:${PYTHONPATH}
+ENV PYSPARK_PYTHON=python3
+
+USER ${SPARK_USER:-185}

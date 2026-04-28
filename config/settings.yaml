@@ -1,0 +1,92 @@
+# ============================================================
+# Конфигурация пайплайна обработки спутниковых снимков
+# Оптимизировано для local[*] режима с ограниченной памятью
+# ============================================================
+
+image:
+  # Размер тайла: 512 — баланс между качеством блендинга и памятью
+  # Для изображений >100 Мп можно уменьшить до 256
+  tile_size: 512
+  # Перекрытие для гауссова блендинга (минимум 16, оптимум 32-64)
+  overlap: 32
+  # Поддерживаемые форматы
+  formats: [".tif", ".tiff", ".png", ".jpg", ".jpeg"]
+  # Валидация размеров
+  min_size: 64
+  max_size: 16384
+
+model:
+  name: "satlaspretrain_base"
+  path: "/models/satlaspretrain_base.pt"
+  device: "cpu"
+  # КРИТИЧНО: уменьшено до 2 для снижения пика памяти при инференсе
+  batch_size: 2
+  # use_mock=true для учебной среды (без GPU и тяжёлых зависимостей)
+  use_mock: true
+
+storage:
+  hdfs_root: "hdfs://namenode:9000"
+  input_dir: "/data/input"
+  output_dir: "/data/output"
+  metadata_dir: "/data/metadata"
+  replication: 1
+  # Путь для локального сохранения при ошибке HDFS (обязательно должен существовать)
+  local_fallback_dir: "/app/data/local_output"
+
+spark:
+  app_name: "SatlasImageEnhancement"
+  
+  # 🔥 КРИТИЧНО: Ограничиваем параллелизм для local-режима
+  # local[2] = максимум 2 потока инференса одновременно
+  # Это предотвращает переполнение памяти при 462 тайлах
+  master: "local[1]"
+  
+  # Память JVM для драйвера (отдельно от Python-процесса)
+  driver_memory: "6g"
+  
+  # 🔥 КРИТИЧНО: 0 = отключить лимит на размер результата .collect()
+  # По умолчанию 1024m — Spark abort'ит задачу при больших данных
+  driver_maxResultSize: "0"
+  
+  # В local-режиме "исполнители" — это те же потоки, память делится
+  executor_memory: "4g"
+  executor_cores: 4
+  
+  # Надёжность: сколько раз перепробовать упавшую задачу
+  task_max_failures: 3
+  
+  # Таймаут для передачи больших объектов (модель, конфиги)
+  broadcast_timeout: 600
+  
+  # Количество партиций: должно быть кратно master (local[2] → 2,4,6...)
+  # 4 — оптимально для 462 тайлов: ~115 задач на поток
+  num_partitions: 2
+  
+  # 🔥 КРИТИЧНО: одна задача на ядро, чтобы не было гонки за модель в памяти
+  task_cpus: 1
+  
+  # Переиспользовать Python-воркеры между задачами (экономит ~20% памяти)
+  python_worker_reuse: true
+  
+  # Сжимать numpy-массивы при передаче между драйвером и воркерами
+  compress_arrays: true
+  
+  # Доп. настройки для стабильности в local-режиме
+  spark_default_parallelism: 4
+  spark_sql_shuffle_partitions: 4
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+  log_dir: "/app/logs"
+  # Опционально: лог-файл с ротацией
+  file: "/app/logs/pipeline.log"
+  file_max_bytes: 10485760  # 10 MB
+  file_backup_count: 3
+
+postprocessing:
+  # Тип блендинга: "gaussian" (плавно, но +1.2 ГБ RAM) или "average" (быстро, экономно)
+  # Если ядро падает после инференса — временно поставьте "average"
+  blending: "gaussian"
+  # Сигма гауссова ядра: 0.5 = плавный переход на ~256 пикселях (при tile=512)
+  gaussian_sigma_ratio: 0.5

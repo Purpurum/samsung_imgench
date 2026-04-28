@@ -1,0 +1,261 @@
+networks:
+  satlas-net:
+    driver: bridge
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  models:
+  shared_data:
+  redis_data:
+  snap-cache:
+
+services:
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: satlas-namenode
+    hostname: namenode
+    environment:
+      - CLUSTER_NAME=satlas-cluster
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_permissions_enabled=false
+      - HDFS_CONF_dfs_webhdfs_enabled=true
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    networks:
+      - satlas-net
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9870/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: satlas-datanode
+    hostname: datanode
+    environment:
+      - CLUSTER_NAME=satlas-cluster
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_permissions_enabled=false
+      - HDFS_CONF_dfs_webhdfs_enabled=true
+      - SERVICE_PRECONDITION=namenode:9870
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    ports:
+      - "9864:9864"
+    networks:
+      - satlas-net
+    depends_on:
+      namenode:
+        condition: service_healthy
+
+  spark-master:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.spark
+    image: satlas/spark:3.5.0
+    container_name: satlas-spark-master
+    hostname: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes:
+      - models:/models
+    networks:
+      - satlas-net
+    depends_on:
+      - namenode
+
+  spark-worker-1:
+    image: satlas/spark:3.5.0
+    container_name: satlas-spark-worker-1
+    hostname: spark-worker-1
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_WEBUI_PORT=8081
+    ports:
+      - "8081:8081"
+    volumes:
+      - models:/models
+    networks:
+      - satlas-net
+    depends_on:
+      - spark-master
+
+  spark-worker-2:
+    image: satlas/spark:3.5.0
+    container_name: satlas-spark-worker-2
+    hostname: spark-worker-2
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_WEBUI_PORT=8082
+    ports:
+      - "8082:8082"
+    volumes:
+      - models:/models
+    networks:
+      - satlas-net
+    depends_on:
+      - spark-master
+
+  jupyter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.jupyter
+    image: satlas/jupyter:1.0.0
+    container_name: satlas-jupyter
+    hostname: jupyter
+    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password='' --NotebookApp.allow_origin='*' --NotebookApp.ip='0.0.0.0'
+    environment:
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+      - SPARK_MASTER=spark://spark-master:7077
+      - HDFS_URI=hdfs://namenode:9000
+      - HADOOP_HOME=/opt/hadoop
+      - ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native
+      - JUPYTER_ENABLE_LAB=yes
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+    volumes:
+      - models:/models
+      - ../notebooks:/app/notebooks
+      - ../data:/app/data
+      - ../config:/app/config
+      - ../src:/app/src
+    networks:
+      - satlas-net
+    depends_on:
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_started
+      spark-master:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    container_name: satlas-redis
+    networks:
+      - satlas-net
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  api-processor:
+    build:
+      context: ./api-processor
+      dockerfile: Dockerfile
+    container_name: satlas-api
+    hostname: api-processor
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AWS_NO_SIGN_REQUEST=YES
+      - PROCESSING_OUT_DIR=/data/processed
+      - PYTHONPATH=/app/src:/app:/usr/local/snap/snappy:/opt/venv/lib/python3.*/site-packages
+      - HADOOP_HOME=/opt/hadoop
+      - SPARK_HOME=/opt/spark
+      - PYSPARK_PYTHON=python3
+    ports:
+      - "8000:8000"
+    volumes:
+      - shared_data:/data/processed
+      - ../src:/app/src:ro
+      - ../config:/app/config:ro
+      - models:/models:ro
+    networks:
+      - satlas-net
+    depends_on:
+      - redis
+      - namenode
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '2'
+
+  celery-worker:
+    build:
+      context: ./api-processor
+      dockerfile: Dockerfile.celery
+    container_name: satlas-celery
+    command: celery -A app.celery_worker worker --loglevel=info --concurrency=1 --pool=solo
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AWS_NO_SIGN_REQUEST=YES
+      - PROCESSING_OUT_DIR=/data/processed
+      - PYTHONPATH=/app:/app/src:/root/.snap/snap-python:/opt/venv/lib/python3.*/site-packages
+      - LD_LIBRARY_PATH=/opt/snap/jre/lib/server:/opt/hadoop/lib/native
+      - JAVA_TOOL_OPTIONS=-Xmx4g
+      - HADOOP_HOME=/opt/hadoop
+      - SPARK_HOME=/opt/spark
+      - PYSPARK_PYTHON=python3
+      - ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native
+    volumes:
+      - shared_data:/data/processed
+      - ../src:/app/src:ro
+      - ../config:/app/config:ro
+      - ../data:/app/data:ro
+      - models:/models:ro
+      - snap-cache:/root/.snap
+    networks:
+      - satlas-net
+    depends_on:
+      - redis
+      - namenode
+      - api-processor
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4'
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: satlas-frontend
+    hostname: frontend
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://api-processor:8000
+      - FRONTEND_DATA_DIR=/app/data/processed
+    volumes:
+      - shared_data:/app/data/processed:ro
+    networks:
+      - satlas-net
+    depends_on:
+      - api-processor
+
+  flower:
+    image: mher/flower:2.0.1
+    container_name: satlas-flower
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+      - FLOWER_ADDRESS=0.0.0.0
+    ports:
+      - "5555:5555"
+    networks:
+      - satlas-net
+    depends_on:
+      - redis

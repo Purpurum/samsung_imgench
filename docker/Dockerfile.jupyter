@@ -1,0 +1,111 @@
+# ============================================================
+# Образ для Jupyter + драйвера Spark-задач с установленным проектом.
+# База: jupyter/pyspark-notebook — включает Python 3, Spark 3.5, Jupyter.
+# ============================================================
+FROM jupyter/pyspark-notebook:spark-3.5.0
+
+# Переходим под root для установки системных пакетов
+USER root
+
+# Системные утилиты: curl для healthcheck, netcat для проверок
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# Настройка Hadoop CLI (требуется для pyarrow.fs.HadoopFileSystem)
+# ============================================================
+ENV HADOOP_VERSION=3.3.4
+ENV HADOOP_HOME=/opt/hadoop
+ENV PATH="${HADOOP_HOME}/bin:${PATH}"
+
+# JAVA_HOME — ОБЯЗАТЕЛЬНО для работы hadoop-скриптов
+# Путь соответствует образу jupyter/pyspark-notebook (OpenJDK 11)
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
+COPY build-cache/hadoop-3.3.4.tar.gz /tmp/hadoop.tar.gz
+
+# Скачиваем и устанавливаем Hadoop
+RUN if [ -f /tmp/hadoop.tar.gz ] && [ -s /tmp/hadoop.tar.gz ]; then \
+        echo "📦 Используем локальный кеш Hadoop" && \
+        HADOOP_VERSION="3.3.4"; \
+    else \
+        echo "📦 Скачиваем Hadoop ${HADOOP_VERSION} из сети" && \
+        curl -fsSL --connect-timeout 60 --retry 3 \
+            "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
+            -o /tmp/hadoop.tar.gz; \
+    fi \
+    && echo "📦 Скачан Hadoop ${HADOOP_VERSION}" \
+    && tar -xzf /tmp/hadoop.tar.gz -C /opt \
+    && mv "/opt/hadoop-${HADOOP_VERSION}" "${HADOOP_HOME}" \
+    && rm /tmp/hadoop.tar.gz \
+    && chown -R ${NB_UID}:${NB_GID} ${HADOOP_HOME} \
+    && chmod -R a+rx ${HADOOP_HOME}/bin ${HADOOP_HOME}/libexec ${HADOOP_HOME}/lib/native \
+    && chmod -R a+r ${HADOOP_HOME}/etc/hadoop ${HADOOP_HOME}/share/hadoop \
+    && echo "✅ Hadoop установлен в ${HADOOP_HOME}"
+
+# Проверка установки при сборке (не упадёт, но покажет в логе)
+RUN /opt/hadoop/bin/hadoop version > /dev/null 2>&1 \
+    && echo "✅ Hadoop version check passed" \
+    || echo "⚠️ Hadoop version check warning (проверьте вручную)"
+
+# ============================================================
+# Настройка для pyarrow.fs.HadoopFileSystem
+# ============================================================
+# Путь к нативным библиотекам libhdfs (нужен для PyArrow)
+ENV ARROW_LIBHDFS_DIR="${HADOOP_HOME}/lib/native"
+# CLASSPATH будет вычислен динамически в Python-коде
+ENV CLASSPATH=""
+
+# ============================================================
+# Установка Python-зависимостей проекта
+# ============================================================
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# ============================================================
+# Копирование исходников проекта
+# ============================================================
+WORKDIR /app
+COPY src /app/src
+COPY config /app/config
+COPY tests /app/tests
+COPY notebooks /app/notebooks
+COPY scripts /app/scripts
+COPY data /app/data
+
+# Создаём директорию для логов и отдаём права пользователю jovyan
+RUN mkdir -p /app/logs && chown -R ${NB_UID}:${NB_GID} /app
+
+# ============================================================
+# Настройка PySpark: единый Python для драйвера и воркеров
+# ============================================================
+# В образе jupyter/pyspark-notebook Conda Python обычно здесь:
+ENV PYSPARK_PYTHON=/opt/conda/bin/python
+ENV PYSPARK_DRIVER_PYTHON=/opt/conda/bin/python
+
+# Проверка при сборке (опционально)
+RUN ${PYSPARK_PYTHON} --version && echo "✅ PySpark Python configured"
+
+# ============================================================
+# Возврат к пользователю jovyan (не-root)
+# ============================================================
+USER ${NB_UID}
+
+# PYTHONPATH — чтобы работали импорты вида `from src.X import Y`
+ENV PYTHONPATH=/app:${PYTHONPATH}
+
+# Рабочая директория
+WORKDIR /app
+
+# ============================================================
+# Healthcheck (опционально, для docker-compose)
+# ============================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8888/api/status || exit 1
+
+# Стартовая команда задаётся в docker-compose.yml
+# CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
