@@ -1,18 +1,17 @@
 FROM ubuntu:24.04
 
 ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-
 ENV DEBIAN_FRONTEND=noninteractive \
     SNAP_VERSION=13.0.0 \
     SNAP_HOME=/opt/snap \
-    LD_LIBRARY_PATH=/opt/snap/jre/lib/server \
     PYTHONUNBUFFERED=1 \
     HADOOP_HOME=/opt/hadoop \
     SPARK_HOME=/opt/spark \
     PYSPARK_PYTHON=python3 \
-    ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native
+    ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native \
+    PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$SPARK_HOME/bin:$SPARK_HOME/sbin:$PATH" \
+    LD_LIBRARY_PATH="${HADOOP_HOME}/lib/native:${SNAP_HOME}/jre/lib/server:${LD_LIBRARY_PATH}"
 
-# === Системные зависимости ===
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl ca-certificates unzip fontconfig libfreetype6 libxrender1 \
     libxtst6 libxi6 libgl1 libglib2.0-0 python3 python3-venv python3-dev \
@@ -23,51 +22,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY build-cache/hadoop-3.3.4.tar.gz /tmp/hadoop.tar.gz
 
-# Скачиваем и устанавливаем Hadoop
-RUN if [ -f /tmp/hadoop.tar.gz ] && [ -s /tmp/hadoop.tar.gz ]; then \
-        echo "📦 Используем локальный кеш Hadoop" && \
-        HADOOP_VERSION="3.3.4"; \
+RUN HADOOP_VERSION="3.3.4" && \
+    if [ -f /tmp/hadoop.tar.gz ] && [ -s /tmp/hadoop.tar.gz ]; then \
+        echo "📦 Используем локальный кеш Hadoop"; \
     else \
-        echo "📦 Скачиваем Hadoop ${HADOOP_VERSION} из сети" && \
+        echo "📦 Скачиваем Hadoop ${HADOOP_VERSION}" && \
         curl -fsSL --connect-timeout 60 --retry 3 \
             "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
             -o /tmp/hadoop.tar.gz; \
-    fi \
-    && echo "📦 Скачан Hadoop ${HADOOP_VERSION}" \
-    && tar -xzf /tmp/hadoop.tar.gz -C /opt \
-    && mv "/opt/hadoop-${HADOOP_VERSION}" "${HADOOP_HOME}" \
-    && rm /tmp/hadoop.tar.gz \
-    && chown -R ${NB_UID}:${NB_GID} ${HADOOP_HOME} \
-    && chmod -R a+rx ${HADOOP_HOME}/bin ${HADOOP_HOME}/libexec ${HADOOP_HOME}/lib/native \
-    && chmod -R a+r ${HADOOP_HOME}/etc/hadoop ${HADOOP_HOME}/share/hadoop \
-    && echo "✅ Hadoop установлен в ${HADOOP_HOME}"
+    fi && \
+    tar -xzf /tmp/hadoop.tar.gz -C /opt && \
+    mv "/opt/hadoop-${HADOOP_VERSION}" "${HADOOP_HOME}" && \
+    rm /tmp/hadoop.tar.gz && \
+    chown -R ${NB_UID}:${NB_GID} ${HADOOP_HOME} && \
+    chmod -R a+rx ${HADOOP_HOME}/bin ${HADOOP_HOME}/libexec ${HADOOP_HOME}/lib/native && \
+    chmod -R a+r ${HADOOP_HOME}/etc/hadoop ${HADOOP_HOME}/share/hadoop && \
+    HADOOP_CP=$(${HADOOP_HOME}/bin/hadoop classpath --glob) && \
+    echo "export CLASSPATH=\"${HADOOP_CP}:\${CLASSPATH}\"" >> /etc/profile.d/hadoop.sh && \
+    echo "✅ Hadoop установлен, CLASSPATH настроен"
 
-# Проверка установки при сборке (не упадёт, но покажет в логе)
-RUN /opt/hadoop/bin/hadoop version > /dev/null 2>&1 \
-    && echo "✅ Hadoop version check passed" \
-    || echo "⚠️ Hadoop version check warning (проверьте вручную)"
+RUN /opt/hadoop/bin/hadoop version > /dev/null 2>&1 && \
+    echo "✅ Hadoop version check passed" || \
+    echo "⚠️ Hadoop version check warning"
 
 COPY build-cache/spark-3.5.0-bin-hadoop3.tgz /tmp/spark.tgz
 
-# === Установка Spark (клиент для PySpark) ===
 RUN SPARK_VERSION="3.5.0" && \
     if [ -f /tmp/spark.tgz ] && [ -s /tmp/spark.tgz ]; then \
-        echo "📦 Используем локальный кеш Spark" ; \
+        echo "📦 Используем локальный кеш Spark"; \
     else \
-        echo "📦 Скачиваем Spark ${SPARK_VERSION} из сети" && \
+        echo "📦 Скачиваем Spark ${SPARK_VERSION}" && \
         curl -fsSL --connect-timeout 60 --retry 3 \
             "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop3.tgz" \
             -o /tmp/spark.tgz; \
     fi && \
-    echo "📦 Скачан Spark ${SPARK_VERSION}" && \
     tar -xzf /tmp/spark.tgz -C /opt && \
     ln -s "/opt/spark-${SPARK_VERSION}-bin-hadoop3" /opt/spark && \
     rm /tmp/spark.tgz && \
     chown -R ${NB_UID}:${NB_GID} /opt/spark && \
     chmod -R a+rx /opt/spark/bin /opt/spark/sbin && \
-    echo "✅ Spark установлен в /opt/spark"
+    echo "export SPARK_DIST_CLASSPATH=\$(\$HADOOP_HOME/bin/hadoop classpath)" >> /etc/profile.d/spark.sh && \
+    echo "✅ Spark установлен"
 
-# === Python-зависимости приложения ===
 RUN pip install --no-cache-dir --break-system-packages \
     "celery==5.3.6" "redis==5.0.1" "boto3==1.34.34" \
     "shapely>=2.0.3" "Pillow>=10.0.0" \
@@ -75,10 +71,8 @@ RUN pip install --no-cache-dir --break-system-packages \
     "pyyaml>=6.0" "numpy>=1.24,<2.0" \
     "opencv-python-headless"
 
-# === Копируем кеш-файл (если есть) ===
 COPY build-cache/esa-snap_all_linux-13.0.0.sh /tmp/snap-installer.sh
 
-# === Установка SNAP: локальный кеш → сеть ===
 RUN if [ -f /tmp/snap-installer.sh ] && [ -s /tmp/snap-installer.sh ]; then \
         echo "📦 Используем локальный кеш SNAP" && \
         chmod +x /tmp/snap-installer.sh && \
@@ -86,7 +80,7 @@ RUN if [ -f /tmp/snap-installer.sh ] && [ -s /tmp/snap-installer.sh ]; then \
     else \
         echo "📦 Скачиваем SNAP ${SNAP_VERSION} из сети" && \
         wget -q --show-progress --progress=bar:force:noscroll \
-            https://download.esa.int/step/snap/13.0/installers/esa-snap_all_linux-${SNAP_VERSION}.sh \
+            "https://download.esa.int/step/snap/13.0/installers/esa-snap_all_linux-${SNAP_VERSION}.sh" \
             -O /tmp/snap-installer.sh && \
         chmod +x /tmp/snap-installer.sh && \
         /tmp/snap-installer.sh -q -dir ${SNAP_HOME}; \
@@ -94,12 +88,10 @@ RUN if [ -f /tmp/snap-installer.sh ] && [ -s /tmp/snap-installer.sh ]; then \
     rm -f /tmp/snap-installer.sh && \
     echo "✅ SNAP установлен в ${SNAP_HOME}"
 
-# === Установка и конфигурация esa_snappy ===
-RUN export JAVA_TOOL_OPTIONS="-Djava.awt.headless=true -Djava.security.manager=allow" && \
-    mkdir -p ${SNAP_HOME}/var/cache/modules/autoupdate && \
-    # Пробуем установить модуль с коротким таймаутом
+ENV JAVA_TOOL_OPTIONS="-Djava.awt.headless=true"
+
+RUN mkdir -p ${SNAP_HOME}/var/cache/modules/autoupdate && \
     timeout 60 ${SNAP_HOME}/bin/snap --nosplash --nogui --modules --install eu.esa.snap.esa.snappy || true && \
-    # Создаём конфиг вручную — это надёжнее, чем snappy-conf
     mkdir -p /root/.snap/snap-python/esa_snappy && \
     cat > /root/.snap/snap-python/esa_snappy/esa_snappy.ini << EOF
 [esa_snappy]
@@ -109,9 +101,20 @@ python_executable: /usr/local/bin/python
 jvm_max_mem: 6G
 EOF
 
+RUN cat > /entrypoint.sh << 'ENTRYPOINT_EOF'
+#!/bin/bash
+set -e
+[ -f /etc/profile.d/hadoop.sh ] && source /etc/profile.d/hadoop.sh
+[ -f /etc/profile.d/spark.sh ] && source /etc/profile.d/spark.sh
+export CLASSPATH SPARK_DIST_CLASSPATH
+exec "$@"
+ENTRYPOINT_EOF
+RUN chmod +x /entrypoint.sh
+
 ENV PYTHONPATH=/app/src:/root/.snap/snap-python
 
 WORKDIR /app
 COPY app/ ./app/
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["celery", "-A", "app.celery_worker.celery_app", "worker", "--loglevel=info", "--pool=solo"]
