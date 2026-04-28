@@ -1,5 +1,7 @@
 FROM ubuntu:24.04
 
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
 ENV DEBIAN_FRONTEND=noninteractive \
     SNAP_VERSION=13.0.0 \
     SNAP_HOME=/opt/snap \
@@ -45,11 +47,24 @@ RUN /opt/hadoop/bin/hadoop version > /dev/null 2>&1 \
     && echo "✅ Hadoop version check passed" \
     || echo "⚠️ Hadoop version check warning (проверьте вручную)"
 
+COPY build-cache/spark-3.5.0-bin-hadoop3.tgz /tmp/spark.tgz
+
 # === Установка Spark (клиент для PySpark) ===
-RUN wget -q https://archive.apache.org/dist/spark/spark-3.5.0/spark-3.5.0-bin-hadoop3.tgz -O /tmp/spark.tgz && \
+RUN SPARK_VERSION="3.5.0" && \
+    if [ -f /tmp/spark.tgz ] && [ -s /tmp/spark.tgz ]; then \
+        echo "📦 Используем локальный кеш Spark" ; \
+    else \
+        echo "📦 Скачиваем Spark ${SPARK_VERSION} из сети" && \
+        curl -fsSL --connect-timeout 60 --retry 3 \
+            "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop3.tgz" \
+            -o /tmp/spark.tgz; \
+    fi && \
+    echo "📦 Скачан Spark ${SPARK_VERSION}" && \
     tar -xzf /tmp/spark.tgz -C /opt && \
-    ln -s /opt/spark-3.5.0-bin-hadoop3 /opt/spark && \
+    ln -s "/opt/spark-${SPARK_VERSION}-bin-hadoop3" /opt/spark && \
     rm /tmp/spark.tgz && \
+    chown -R ${NB_UID}:${NB_GID} /opt/spark && \
+    chmod -R a+rx /opt/spark/bin /opt/spark/sbin && \
     echo "✅ Spark установлен в /opt/spark"
 
 # === Python-зависимости приложения ===
