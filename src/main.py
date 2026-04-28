@@ -84,7 +84,7 @@ def _get_or_create_enhancer_threadsafe(cfg: ModelConfig) -> ImageEnhancer:
     # Быстрая проверка без лога
     if key in _ENHANCER_CACHE:
         return _ENHANCER_CACHE[key]
-    
+
     with _ENHANCER_LOCK:
         # Повторная проверка внутри лога
         if key not in _ENHANCER_CACHE:
@@ -99,7 +99,7 @@ def _serialize_array(arr: np.ndarray, compress: bool = True) -> bytes:
     return zlib.compress(data, level=6) if compress else data
 
 
-def _deserialize_array(data: bytes, compress: bool = True) -> np.ndarray:
+def _deserialize_array( bytes, compress: bool = True) -> np.ndarray:
     """Десериализация numpy-массива с опциональным сжатием."""
     raw = zlib.decompress(data) if compress else data
     return pickle.loads(raw)
@@ -116,18 +116,18 @@ def _process_partition_factory(model_cfg_dict: dict, spark_cfg: dict):
     def _process(iterator):
         # Ленивый импорт внутри воркера
         from src.model import ModelConfig, get_or_create_enhancer
-        
+
         mcfg = ModelConfig(**model_cfg_dict)
         enhancer = get_or_create_enhancer(mcfg)
         batch_size = spark_cfg.get("batch_size", 2)
-        
+
         batch_metas = []
         batch_datas = []
-        
+
         for meta, data in iterator:
             batch_metas.append(meta)
             batch_datas.append(data)
-            
+
             if len(batch_datas) >= batch_size:
                 try:
                     results = enhancer.enhance_batch(batch_datas)
@@ -144,7 +144,7 @@ def _process_partition_factory(model_cfg_dict: dict, spark_cfg: dict):
                     # 🔥 ГАРАНТИРОВАННАЯ очистка независимо от успеха/ошибки
                     batch_metas.clear()
                     batch_datas.clear()
-        
+
         # Обработка остатка (хвоста)
         if batch_datas:
             try:
@@ -214,7 +214,7 @@ def run_enhancement_pipeline(
         Словарь с метриками и путями в HDFS (консистентная структура).
     """
     import gc  # Для принудительной сборки мусора
-    
+
     t_start = time.time()
     cfg = load_config(config_path)
     logger = setup_logging(
@@ -304,21 +304,21 @@ def run_enhancement_pipeline(
         logger.info(f"💾 Память ДО инференса: {process.memory_info().rss / 1024**2:.1f} MB")
 
         t_infer = time.time()
-        
+
         # Запускаем обработку с ПОТОКОВОЙ передачей данных
         processed_rdd = rdd.mapPartitions(
             _process_partition_factory(model_cfg_dict, spark_worker_cfg)
         )
-        
+
         # Собираем результаты
         processed_serialized = processed_rdd.collect()
-        
+
         # 🔥 КРИТИЧНО: Немедленно освобождаем RDD и исходные данные
         del processed_rdd
         del rdd
         del tile_items
         gc.collect()
-        
+
         infer_time = time.time() - t_infer
         logger.info(
             "Инференс завершён: %d тайлов за %.2f сек (%.2f тайлов/сек)",
@@ -341,11 +341,11 @@ def run_enhancement_pipeline(
                     data=data,  # Теперь это ndarray, а не bytes
                 )
             )
-        
+
         # Освобождаем память после десериализации
         del processed_serialized
         gc.collect()
-        
+
         # Сортируем по исходному индексу для детерминированности
         processed_tiles.sort(key=lambda t: t.index)
 
@@ -361,7 +361,7 @@ def run_enhancement_pipeline(
 
         # 🔥 Освобождаем списки тайлов ПЕРЕД загрузкой оригинала для метрик
         total_tiles = len(tiles)
-        
+
         # Освобождаем память
         del tiles, processed_tiles
         gc.collect()
@@ -370,18 +370,18 @@ def run_enhancement_pipeline(
         # 📊 Расчёт метрик (с защитой от OOM)
         try:
             from PIL import Image as PILImage
-            
+
             # Вариант А: Загружаем оригинал с явным приведением к uint8 (экономит память)
             with PILImage.open(src_path) as img:
                 # Конвертируем сразу в numpy без промежуточного копирования
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 original_full = np.asarray(img, dtype=np.uint8)
-            
+
             # Обрезаем до общего размера (если формы разошлись)
             h = min(original_full.shape[0], enhanced.shape[0])
             w = min(original_full.shape[1], enhanced.shape[1])
-            
+
             # 🔥 Опционально: считаем метрики на даунскейле для экономии памяти
             # Если изображение >50 Мп — уменьшаем в 2× для метрик
             if h * w > 50_000_000:
@@ -394,13 +394,13 @@ def run_enhancement_pipeline(
             else:
                 metric_psnr = psnr(original_full[:h, :w], enhanced[:h, :w])
                 metric_ssim = ssim_simple(original_full[:h, :w], enhanced[:h, :w])
-            
+
             logger.info("Метрики: PSNR=%.2f dB, SSIM=%.4f", metric_psnr, metric_ssim)
-            
+
             # Освобождаем оригинал после метрик
             del original_full
             gc.collect()
-            
+
         except Exception as e:
             logger.warning("⚠️ Не удалось рассчитать метрики: %s, пропускаем", e)
             metric_psnr = metric_ssim = None
@@ -412,6 +412,8 @@ def run_enhancement_pipeline(
             output_dir=cfg["storage"]["output_dir"],
             metadata_dir=cfg["storage"]["metadata_dir"],
             replication=cfg["storage"]["replication"],
+            access_log_enabled=cfg["storage"].get("access_log_enabled", True),
+            access_log_dir=cfg["storage"].get("access_log_dir"),
         )
         hdfs = HDFSClient(hcfg)
         date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
@@ -433,7 +435,7 @@ def run_enhancement_pipeline(
         try:
             hdfs.put_local_file(src_path, input_hdfs)
             hdfs.put_image(enhanced, output_hdfs, fmt="PNG")
-            
+
             # Заполняем успешные значения
             metadata.update({
                 "original_path": input_hdfs,
@@ -450,16 +452,16 @@ def run_enhancement_pipeline(
             })
             hdfs.put_json(metadata, meta_hdfs)
             logger.info("Результаты сохранены в HDFS: %s", meta_hdfs)
-            
+
         except Exception as e:
             logger.error("Ошибка записи в HDFS: %s", e)
             # Fallback: локальное сохранение
             local_output_dir = Path(cfg["storage"].get("local_fallback_dir", "/app/data/local_output"))
             local_output_dir.mkdir(parents=True, exist_ok=True)
-            
+
             local_path = local_output_dir / f"{image_id}_enhanced.png"
             PILImage.fromarray(enhanced).save(local_path)
-            
+
             metadata.update({
                 "enhanced_path": str(local_path),
                 "error": str(e),
@@ -510,7 +512,7 @@ def main() -> int:
             validate_image(args.image, cfg["image"])
             print("✅ Валидация пройдена")
             return 0
-            
+
         result = run_enhancement_pipeline(
             image_path=args.image,
             image_id=args.image_id,
@@ -529,7 +531,7 @@ def main() -> int:
             print("📁 fallback    : локальное сохранение")
         print("=" * 60)
         return 0
-        
+
     except Exception as e:
         log.exception("❌ Пайплайн упал: %s", e)
         return 1

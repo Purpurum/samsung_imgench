@@ -32,6 +32,9 @@ storage:
   replication: 1
   # Путь для локального сохранения при ошибке HDFS (обязательно должен существовать)
   local_fallback_dir: "/app/data/local_output"
+  # Логирование обращений к HDFS (время, операции, метрики)
+  access_log_enabled: true
+  access_log_dir: "/data/logs/hdfs_access"
 
 spark:
   app_name: "SatlasImageEnhancement"
