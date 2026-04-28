@@ -285,7 +285,8 @@ def process_uploaded_image(
             # Сохраняем тайлы в HDFS
             if hdfs_client:
                 try:
-                    hdfs_client.put_image(base, f"{hdfs_output_path}/tiles/tile_{i:03d}_mock.png")
+                    hdfs_tile_path = f"{hdfs_output_path}/tiles/tile_{i:03d}_mock.png"
+                    hdfs_client.put_image(base, hdfs_tile_path)
                     log.info(f"Saved mock tile to HDFS: {hdfs_tile_path}")
                 except Exception as e:
                     log.warning(f"Failed to save tile to HDFS: {e}")

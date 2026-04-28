@@ -23,4 +23,15 @@ celery_app.conf.update(
     worker_hijack_root_logger=False,
     task_send_sent_event=True,
     worker_send_task_events=True,
+    result_expires=3600,  # Результаты хранятся 1 час
+    task_ignore_result=False,  # Важно: сохраняем результаты задач
 )
+
+# Устанавливаем task_id_generator чтобы использовать job_id как task_id
+import uuid
+
+def custom_task_id_generator():
+    """Генератор task_id, который может быть переопределен"""
+    return str(uuid.uuid4())
+
+celery_app.conf.task_id_generator = custom_task_id_generator

@@ -207,7 +207,7 @@ with tab3:
                             result_files = list(job_dir.glob("result*.png"))
                             if result_files:
                                 st.subheader("📸 Enhanced Result")
-                                st.image(str(result_files[0]), caption="Enhanced image", use_container_width=True)
+                                st.image(str(result_files[0]), caption="Enhanced image", use_column_width=True)
 
                                 # Download button
                                 with open(result_files[0], "rb") as f:
@@ -218,35 +218,57 @@ with tab3:
                                         mime="image/png"
                                     )
 
-                            # Display tiles in grid
+                            # Display tiles in grid - проверяем все PNG файлы, не только с суффиксами
                             if tiles_dir.exists():
                                 original_tiles = sorted(tiles_dir.glob("*_original.png"))
                                 enhanced_tiles = sorted(tiles_dir.glob("*_enhanced.png"))
+                                mock_tiles = sorted(tiles_dir.glob("*_mock.png"))
                                 all_tiles = sorted(tiles_dir.glob("*.png"))
 
                                 if all_tiles:
                                     st.subheader(f"🔲 Tiles ({len(all_tiles)} total)")
 
-                                    # Create tabs for original vs enhanced
-                                    tile_tab1, tile_tab2 = st.tabs(["Original Tiles", "Enhanced Tiles"])
+                                    # Создаем вкладки в зависимости от типов тайлов
+                                    tab_names = []
+                                    if original_tiles:
+                                        tab_names.append("Original Tiles")
+                                    if enhanced_tiles:
+                                        tab_names.append("Enhanced Tiles")
+                                    if mock_tiles and not original_tiles and not enhanced_tiles:
+                                        tab_names.append("Mock Tiles")
 
-                                    with tile_tab1:
+                                    if len(tab_names) > 1:
+                                        tile_tabs = st.tabs(tab_names)
+                                        tab_idx = 0
+
                                         if original_tiles:
-                                            cols = st.columns(min(4, len(original_tiles)))
-                                            for i, t_path in enumerate(original_tiles):
-                                                with cols[i % 4]:
-                                                    st.image(str(t_path), caption=t_path.name, use_container_width=True)
-                                        else:
-                                            st.info("No original tiles found")
+                                            with tile_tabs[tab_idx]:
+                                                cols = st.columns(min(4, len(original_tiles)))
+                                                for i, t_path in enumerate(original_tiles):
+                                                    with cols[i % 4]:
+                                                        st.image(str(t_path), caption=t_path.name, use_column_width=True)
+                                                tab_idx += 1
 
-                                    with tile_tab2:
                                         if enhanced_tiles:
-                                            cols = st.columns(min(4, len(enhanced_tiles)))
-                                            for i, t_path in enumerate(enhanced_tiles):
-                                                with cols[i % 4]:
-                                                    st.image(str(t_path), caption=t_path.name, use_container_width=True)
-                                        else:
-                                            st.info("No enhanced tiles found")
+                                            with tile_tabs[tab_idx]:
+                                                cols = st.columns(min(4, len(enhanced_tiles)))
+                                                for i, t_path in enumerate(enhanced_tiles):
+                                                    with cols[i % 4]:
+                                                        st.image(str(t_path), caption=t_path.name, use_column_width=True)
+                                                tab_idx += 1
+
+                                        if mock_tiles and not original_tiles and not enhanced_tiles:
+                                            with tile_tabs[tab_idx]:
+                                                cols = st.columns(min(4, len(mock_tiles)))
+                                                for i, t_path in enumerate(mock_tiles):
+                                                    with cols[i % 4]:
+                                                        st.image(str(t_path), caption=t_path.name, use_column_width=True)
+                                    elif len(tab_names) == 1:
+                                        # Только один тип тайлов - показываем все сразу
+                                        cols = st.columns(min(4, len(all_tiles)))
+                                        for i, t_path in enumerate(all_tiles):
+                                            with cols[i % 4]:
+                                                st.image(str(t_path), caption=t_path.name, use_column_width=True)
 
                                     # Tile statistics
                                     st.subheader("📊 Tile Statistics")
