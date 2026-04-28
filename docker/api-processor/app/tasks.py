@@ -11,7 +11,10 @@ from .celery_worker import celery_app
 log = logging.getLogger(__name__)
 
 def _get_hdfs_client():
-    """Создаёт HDFS клиент с конфигурацией из settings.yaml"""
+    """Создаёт HDFS клиент с конфигурацией из settings.yaml.
+
+    Возвращает None, если HDFS недоступен (pyarrow + CLI).
+    """
     try:
         from src.utils.config import load_config
         from src.storage.hdfs_client import HDFSClient, HDFSConfig
@@ -20,17 +23,33 @@ def _get_hdfs_client():
         if not config_path.exists():
             config_path = Path("/workspace/config/settings.yaml")
 
-        if config_path.exists():
-            cfg = load_config(config_path)
-            storage_cfg = cfg.get("storage", {})
-            hdfs_cfg = HDFSConfig(
-                root=storage_cfg.get("hdfs_root", "hdfs://namenode:9000"),
-                input_dir=storage_cfg.get("input_dir", "/data/input"),
-                output_dir=storage_cfg.get("output_dir", "/data/output"),
-                metadata_dir=storage_cfg.get("metadata_dir", "/data/metadata"),
-                replication=storage_cfg.get("replication", 1)
-            )
-            return HDFSClient(hdfs_cfg)
+        if not config_path.exists():
+            log.warning("Settings file not found, HDFS unavailable")
+            return None
+
+        cfg = load_config(config_path)
+        storage_cfg = cfg.get("storage", {})
+        hdfs_cfg = HDFSConfig(
+            root=storage_cfg.get("hdfs_root", "hdfs://namenode:9000"),
+            input_dir=storage_cfg.get("input_dir", "/data/input"),
+            output_dir=storage_cfg.get("output_dir", "/data/output"),
+            metadata_dir=storage_cfg.get("metadata_dir", "/data/metadata"),
+            replication=storage_cfg.get("replication", 1)
+        )
+        client = HDFSClient(hdfs_cfg)
+
+        # Проверяем работоспособность клиента
+        fs = client._get_fs()
+        if fs is None:
+            # pyarrow не работает, пробуем CLI
+            import subprocess
+            r = subprocess.run(["hdfs", "dfs", "-test", "-e", "/"], capture_output=True)
+            if r.returncode != 0:
+                log.warning("HDFS unavailable: pyarrow failed and CLI not accessible")
+                return None
+
+        log.info("HDFS client initialized successfully")
+        return client
     except Exception as e:
         log.warning(f"HDFS client unavailable: {e}")
     return None
@@ -132,7 +151,10 @@ def _spark_process_tiles(
     config: Dict,
     job_id: str
 ) -> List[Dict]:
-    """Обрабатывает тайлы через Spark с сохранением в HDFS"""
+    """Обрабатывает тайлы через Spark.
+
+    Возвращает обработанные тайлы. Если Spark недоступен — fallback на локальную обработку.
+    """
     try:
         from pyspark.sql import SparkSession
         from pyspark import SparkContext
@@ -170,7 +192,15 @@ def _spark_process_tiles(
     for key, value in get_spark_config(full_config).items():
         builder = builder.config(key, value)
 
-    spark = builder.getOrCreate()
+    try:
+        spark = builder.getOrCreate()
+        log.info(f"Spark session created: {spark.sparkContext.appName}")
+    except Exception as e:
+        log.error(f"Failed to create Spark session: {e}, falling back to local")
+        for tile in tiles:
+            tile["data"] = _mock_enhance(tile["data"])
+        return tiles
+
     sc = spark.sparkContext
 
     try:

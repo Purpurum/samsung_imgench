@@ -1,6 +1,6 @@
 # Satlas Image Enhancement
 
-Распределённая система обработки спутниковых снимков на базе **Apache Spark** и **Hadoop (HDFS)** с интеграцией нейросетевой модели улучшения качества изображений. Реализация учебного ТЗ с полным production-стеком: REST API, асинхронная обработка через Celery, Web UI на Streamlit и мониторинг задач.
+Распределённая система обработки спутниковых снимков на базе **Apache Spark** и **Hadoop (HDFS)** с интеграцией нейросетевой модели улучшения качества изображений. Дополнительно реализованы REST API, асинхронная обработка через Celery, Web UI на Streamlit и мониторинг задач.
 
 ---
 
@@ -14,10 +14,6 @@
 6. [Конфигурация](#конфигурация)
 7. [WebUI кластера](#webui-кластера)
 8. [Запуск пайплайна](#запуск-пайплайна)
-9. [Тестирование](#тестирование)
-10. [Переход на реальную модель Satlas](#переход-на-реальную-модель-satlas)
-11. [Диагностика проблем](#диагностика-проблем)
-12. [Соответствие ТЗ](#соответствие-тз)
 
 ---
 
@@ -363,107 +359,10 @@ docker exec satlas-namenode hdfs dfs -put *.png /data/input/raw/
 
 ---
 
-## Тестирование
-
-```bash
-make test
-```
-
-Запускает 16 unit-тестов внутри контейнера:
-
-- **8 тестов `test_tiling.py`** — разбиение/сборка: корректность стартовых координат, покрытие всего изображения, round-trip без потерь, обработка маленьких изображений, валидация невалидных параметров.
-- **8 тестов `test_model_metrics.py`** — mock-модель сохраняет форму и действительно меняет изображение; батч совпадает с последовательным вызовом; PSNR/SSIM дают ожидаемые граничные значения.
-
-Все 16 проходят на чистой установке.
-
-Для покрытия: `pytest tests/ --cov=src --cov-report=html`.
-
----
-
-## Переход на реальную модель Satlas
-
-По умолчанию `use_mock: true` — пайплайн работает без внешних зависимостей и без GPU. Для интеграции реальной модели [`satlaspretrain_models`](https://github.com/allenai/satlaspretrain_models):
-
-1. В `requirements.txt` раскомментировать блок с `torch`, `torchvision`, `satlaspretrain_models`.
-2. Пересобрать образы: `make build`.
-3. В `config/settings.yaml`:
-   ```yaml
-   model:
-     use_mock: false
-     name: "Sentinel2_SwinB_SI_RGB"   # см. каталог satlaspretrain
-     device: "cuda"                   # если доступен GPU
-   ```
-4. При первом запуске веса скачаются в `/models` (volume общий для Jupyter и Spark-воркеров — веса скачаются один раз).
-
-Интерфейс `ImageEnhancer` одинаков для обоих режимов — остальные модули не меняются.
-
----
-
-## Диагностика проблем
-
-**`Celery worker не подключается к Redis`**
-
-Проверьте, что сервис `redis` запущен: `docker ps | grep satlas-redis`. Логи Celery: `docker logs satlas-celery`. Перезапуск: `docker restart satlas-celery satlas-redis`.
-
-**`API Processor не стартует / 502 Bad Gateway`**
-
-Сервису может не хватать памяти. Проверьте логи: `docker logs satlas-api`. Увеличьте лимит в `docker/docker-compose.yml` (секция `deploy.resources.limits`).
-
-**`NameNode не стартует` / `Connection refused hdfs://namenode:9000`**
-Дайте кластеру 30–60 секунд после `make up` — в `docker-compose.yml` прописан `healthcheck`, но на медленных машинах первый старт длиннее. Логи: `make logs`.
-
-**`py4j.protocol.Py4JJavaError ... java.io.IOException: No FileSystem for scheme: hdfs`**
-Не настроен `CLASSPATH` для pyarrow. В ноутбуке выполните:
-```python
-import subprocess, os
-os.environ["CLASSPATH"] = subprocess.check_output(
-    ["/opt/hadoop/bin/hadoop", "classpath", "--glob"]
-).decode().strip()
-```
-Для `spark-submit` это делает `scripts/run_pipeline.sh`.
-
-**`WorkerLostException` во время инференса**
-Воркеру не хватает памяти (по умолчанию 2 ГБ). В `docker/docker-compose.yml` увеличьте `SPARK_WORKER_MEMORY`, в `settings.yaml` — `spark.executor.memory`.
-
-**`image_search: use_mock=true, а PSNR = inf`**
-Вы обрабатываете изображение, на котором median-фильтр и unsharp-mask не дают заметного эффекта (например, полностью монотонное). Попробуйте сгенерированный `scripts/generate_sample.py` — там специально добавлен шум и структуры, чтобы эффект был виден.
-
-**Тесты падают локально, а в контейнере проходят**
-Скорее всего, отсутствуют `pyyaml` / `pillow` / `numpy` на хосте. Установите: `pip install -r requirements.txt`.
-
----
-
-## Соответствие ТЗ
-
-| Требование ТЗ | Где реализовано |
-|---|---|
-| Этап 1: приём и валидация | `src/preprocessing/tiling.py::validate_image` |
-| Этап 2: разбиение на тайлы с overlap | `split_image_into_tiles` |
-| Этап 3: распределённая обработка через Spark | `src/main.py` + `mapPartitions` |
-| Загрузка модели один раз на воркер | `get_or_create_enhancer` (модульный кеш) |
-| Batch-инференс | `ImageEnhancer.enhance_batch` |
-| Этап 4: сборка с blending | `assemble_tiles` + gaussian-маска |
-| Этап 5: сохранение в HDFS | `HDFSClient` + структура `/data/{input,output,metadata}` |
-| Метаданные обработки (JSON) | `HDFSClient.put_json` в `run_enhancement_pipeline` |
-| Spark-конфигурация (память, ядра, retries) | `config/settings.yaml` + `docker-compose.yml` |
-| Модульные тесты | `tests/test_tiling.py`, `tests/test_model_metrics.py` |
-| Интеграционный тест full-pipeline | `notebooks/demo_pipeline.ipynb` |
-| Метрики PSNR/SSIM | `src/postprocessing/metrics.py` |
-| Логирование в файл и stdout | `src/utils/config.py::setup_logging` |
-| Расширяемость (замена модели) | Интерфейс `ImageEnhancer` + флаг `use_mock` |
-| REST API для обработки | `docker/api-processor/app/main.py` (FastAPI) |
-| Асинхронная обработка задач | Celery worker (`docker/api-processor/Dockerfile.celery`) |
-| Web UI для пользователей | Streamlit frontend (`docker/frontend/app.py`) |
-| Мониторинг очереди задач | Flower (порт 5555) |
-| Брокер сообщений | Redis (порт 6379) |
-
----
-
-## Дальнейшие улучшения (за рамками ТЗ)
+## Дальнейшие улучшения
 
 - Поддержка **GeoTIFF** с сохранением геопривязки через `rasterio` (сейчас при сохранении в PNG метаданные теряются).
 - Параллельная обработка **пачки снимков** через `spark.read.format("binaryFile")` — чтобы Spark сам распределял файлы.
-- **Persistent model cache** — при `use_mock: false` скачивать веса один раз в volume `/models`, а не на каждый старт воркера.
 - Метрики **MS-SSIM** и **LPIPS** для более точной оценки перцептивного качества.
 - **Kerberos** для защищённого HDFS в продакшене.
 
