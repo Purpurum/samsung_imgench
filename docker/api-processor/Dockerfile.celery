@@ -4,16 +4,61 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SNAP_VERSION=13.0.0 \
     SNAP_HOME=/opt/snap \
     LD_LIBRARY_PATH=/opt/snap/jre/lib/server \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HADOOP_HOME=/opt/hadoop \
+    SPARK_HOME=/opt/spark \
+    PYSPARK_PYTHON=python3 \
+    ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native
 
 # === Системные зависимости ===
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl ca-certificates unzip fontconfig libfreetype6 libxrender1 \
     libxtst6 libxi6 libgl1 libglib2.0-0 python3 python3-venv python3-dev \
-    python3-pip && \
+    python3-pip openjdk-11-jdk-headless && \
     ln -sf /usr/bin/python3 /usr/local/bin/python && \
     ln -sf /usr/bin/pip3 /usr/local/bin/pip && \
     rm -rf /var/lib/apt/lists/*
+
+COPY build-cache/hadoop-3.3.4.tar.gz /tmp/hadoop.tar.gz
+
+# Скачиваем и устанавливаем Hadoop
+RUN if [ -f /tmp/hadoop.tar.gz ] && [ -s /tmp/hadoop.tar.gz ]; then \
+        echo "📦 Используем локальный кеш Hadoop" && \
+        HADOOP_VERSION="3.3.4"; \
+    else \
+        echo "📦 Скачиваем Hadoop ${HADOOP_VERSION} из сети" && \
+        curl -fsSL --connect-timeout 60 --retry 3 \
+            "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
+            -o /tmp/hadoop.tar.gz; \
+    fi \
+    && echo "📦 Скачан Hadoop ${HADOOP_VERSION}" \
+    && tar -xzf /tmp/hadoop.tar.gz -C /opt \
+    && mv "/opt/hadoop-${HADOOP_VERSION}" "${HADOOP_HOME}" \
+    && rm /tmp/hadoop.tar.gz \
+    && chown -R ${NB_UID}:${NB_GID} ${HADOOP_HOME} \
+    && chmod -R a+rx ${HADOOP_HOME}/bin ${HADOOP_HOME}/libexec ${HADOOP_HOME}/lib/native \
+    && chmod -R a+r ${HADOOP_HOME}/etc/hadoop ${HADOOP_HOME}/share/hadoop \
+    && echo "✅ Hadoop установлен в ${HADOOP_HOME}"
+
+# Проверка установки при сборке (не упадёт, но покажет в логе)
+RUN /opt/hadoop/bin/hadoop version > /dev/null 2>&1 \
+    && echo "✅ Hadoop version check passed" \
+    || echo "⚠️ Hadoop version check warning (проверьте вручную)"
+
+# === Установка Spark (клиент для PySpark) ===
+RUN wget -q https://archive.apache.org/dist/spark/spark-3.5.0/spark-3.5.0-bin-hadoop3.tgz -O /tmp/spark.tgz && \
+    tar -xzf /tmp/spark.tgz -C /opt && \
+    ln -s /opt/spark-3.5.0-bin-hadoop3 /opt/spark && \
+    rm /tmp/spark.tgz && \
+    echo "✅ Spark установлен в /opt/spark"
+
+# === Python-зависимости приложения ===
+RUN pip install --no-cache-dir --break-system-packages \
+    "celery==5.3.6" "redis==5.0.1" "boto3==1.34.34" \
+    "shapely>=2.0.3" "Pillow>=10.0.0" \
+    "pyspark==3.5.0" "pyarrow>=14.0.0" \
+    "pyyaml>=6.0" "numpy>=1.24,<2.0" \
+    "opencv-python-headless"
 
 # === Копируем кеш-файл (если есть) ===
 COPY build-cache/esa-snap_all_linux-13.0.0.sh /tmp/snap-installer.sh
@@ -34,12 +79,6 @@ RUN if [ -f /tmp/snap-installer.sh ] && [ -s /tmp/snap-installer.sh ]; then \
     rm -f /tmp/snap-installer.sh && \
     echo "✅ SNAP установлен в ${SNAP_HOME}"
 
-# === Python-зависимости приложения ===
-RUN pip install --no-cache-dir --break-system-packages \
-    "celery==5.3.6" "redis==5.0.1" "boto3==1.34.34" \
-    "shapely>=2.0.3" "Pillow>=10.0.0" \
-    "pyspark==3.5.0" "pyarrow>=14.0.0"
-
 # === Установка и конфигурация esa_snappy ===
 RUN export JAVA_TOOL_OPTIONS="-Djava.awt.headless=true -Djava.security.manager=allow" && \
     mkdir -p ${SNAP_HOME}/var/cache/modules/autoupdate && \
@@ -56,10 +95,6 @@ jvm_max_mem: 6G
 EOF
 
 ENV PYTHONPATH=/app/src:/root/.snap/snap-python
-
-ENV PYTHONPATH=/app/src:/root/.snap/snap-python
-
-RUN echo "java_max_mem: 6G" > /root/.snap/snap-python/esa_snappy/esa_snappy.ini
 
 WORKDIR /app
 COPY app/ ./app/
