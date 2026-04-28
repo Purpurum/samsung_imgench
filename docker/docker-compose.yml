@@ -77,6 +77,12 @@ services:
       - satlas-net
     depends_on:
       - namenode
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   spark-worker-1:
     image: satlas/spark:3.5.0
@@ -85,7 +91,7 @@ services:
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_MEMORY=4G
       - SPARK_WORKER_WEBUI_PORT=8081
     ports:
       - "8081:8081"
@@ -94,7 +100,14 @@ services:
     networks:
       - satlas-net
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8081/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   spark-worker-2:
     image: satlas/spark:3.5.0
@@ -103,7 +116,7 @@ services:
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_MEMORY=4G
       - SPARK_WORKER_WEBUI_PORT=8082
     ports:
       - "8082:8082"
@@ -112,7 +125,14 @@ services:
     networks:
       - satlas-net
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8082/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   jupyter:
     build:

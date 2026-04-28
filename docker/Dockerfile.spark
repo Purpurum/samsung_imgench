@@ -7,9 +7,9 @@ FROM apache/spark:3.5.0
 
 USER root
 
-# Образ apache/spark минимальный — нужен pip
+# Образ apache/spark минимальный — нужен pip и curl для healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-pip \
+        python3-pip curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Python-зависимости, которые будут использоваться в воркер-процессах
