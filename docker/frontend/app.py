@@ -9,10 +9,10 @@ import base64
 API_URL = os.getenv("API_URL", "http://api-processor:8000")
 DATA_DIR = os.getenv("FRONTEND_DATA_DIR", "/app/data/processed")
 
-st.set_page_config(page_title="Satellite Image Enhancer", layout="wide")
-st.title("Satellite Image Quality Enhancer")
+st.set_page_config(page_title="Улучшение спутниковых снимков", layout="wide")
+st.title("Улучшитель качества спутниковых снимков")
 
-tab1, tab2, tab3 = st.tabs(["Upload and Process", "API Direct Access", "Results and Tiles"])
+tab1, tab2, tab3 = st.tabs(["Загрузка и обработка", "Прямой доступ к API", "Результаты и тайлы"])
 
 def upload_file(file_obj, params_dict=None):
     """Отправка файла на обработку через API"""
@@ -52,22 +52,22 @@ def get_image_base64(image_path):
         return None
 
 with tab1:
-    st.header("Upload image for enhancement")
-    uploaded = st.file_uploader("Select file", type=["tif", "tiff", "SAFE", "png", "jpg"])
+    st.header("Загрузка изображения для улучшения")
+    uploaded = st.file_uploader("Выберите файл", type=["tif", "tiff", "SAFE", "png", "jpg"])
 
     if uploaded:
-        st.info(f"Selected: {uploaded.name}")
+        st.info(f"Выбрано: {uploaded.name}")
 
         col1, col2 = st.columns(2)
         with col1:
-            tile_size = st.selectbox("Tile size", [256, 512, 1024], index=1)
-            overlap = st.selectbox("Overlap", [16, 32, 64], index=1)
+            tile_size = st.selectbox("Размер тайла", [256, 512, 1024], index=1)
+            overlap = st.selectbox("Перекрытие", [16, 32, 64], index=1)
         with col2:
-            use_mock = st.checkbox("Use mock model (faster)", value=False)  # По умолчанию реальная обработка
-            blending = st.selectbox("Blending", ["gaussian", "average", "none"], index=0)
+            use_mock = st.checkbox("Использовать тестовую модель (быстрее)", value=False)  # По умолчанию реальная обработка
+            blending = st.selectbox("Смешивание", ["gaussian", "average", "none"], index=0)
 
-        if st.button("Start Processing", type="primary"):
-            with st.spinner("Uploading and queuing task..."):
+        if st.button("Начать обработку", type="primary"):
+            with st.spinner("Загрузка и постановка задачи в очередь..."):
                 params = {
                     "tile_size": tile_size,
                     "overlap": overlap,
@@ -78,38 +78,38 @@ with tab1:
                     resp = upload_file(uploaded, params)
                     if resp.status_code == 200:
                         res = resp.json()
-                        st.success(f"Task {res['job_id']} queued")
+                        st.success(f"Задача {res['job_id']} добавлена в очередь")
                         st.session_state["last_job_id"] = res["job_id"]
                     else:
-                        st.error(f"API error: {resp.text}")
+                        st.error(f"Ошибка API: {resp.text}")
                 except Exception as e:
-                    st.error(f"Network error: {e}")
+                    st.error(f"Ошибка сети: {e}")
 
 with tab2:
-    st.header("Direct API access via HTTP")
+    st.header("Прямой доступ к API через HTTP")
     st.markdown("""
-    This tab allows you to interact with the processing API directly.
-    Upload an image and send it to the backend for processing.
+    Эта вкладка позволяет напрямую взаимодействовать с API обработки.
+    Загрузите изображение и отправьте его на обработку в бэкенд.
     """)
 
-    st.code(f"""# Example curl command
+    st.code(f"""# Пример команды curl
 curl -X POST "{API_URL}/api/process/upload" \\
   -F "file=@your_image.png" \\
   -F 'params={{"tile_size":512,"overlap":32,"use_mock":true}}'
 
-# Response will contain job_id for status checking
+# Ответ будет содержать job_id для проверки статуса
 """, language="bash")
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        api_file = st.file_uploader("Upload file for API test", type=["tif", "tiff", "SAFE", "png", "jpg"], key="api_uploader")
+        api_file = st.file_uploader("Загрузить файл для тестирования API", type=["tif", "tiff", "SAFE", "png", "jpg"], key="api_uploader")
     with col2:
-        api_tile_size = st.selectbox("Tile size", [256, 512, 1024], index=1, key="api_tile")
-        api_overlap = st.selectbox("Overlap", [16, 32, 64], index=1, key="api_overlap")
-        api_use_mock = st.checkbox("Use mock", value=False, key="api_mock")  # По умолчанию реальная обработка
+        api_tile_size = st.selectbox("Размер тайла", [256, 512, 1024], index=1, key="api_tile")
+        api_overlap = st.selectbox("Перекрытие", [16, 32, 64], index=1, key="api_overlap")
+        api_use_mock = st.checkbox("Использовать тестовую модель", value=False, key="api_mock")  # По умолчанию реальная обработка
 
-    if api_file and st.button("Send via API", type="primary", key="api_send"):
-        with st.spinner("Requesting..."):
+    if api_file and st.button("Отправить через API", type="primary", key="api_send"):
+        with st.spinner("Запрос..."):
             try:
                 params = {
                     "tile_size": api_tile_size,
@@ -120,49 +120,49 @@ curl -X POST "{API_URL}/api/process/upload" \\
 
                 if resp.status_code == 200:
                     result = resp.json()
-                    st.success("Request successful!")
+                    st.success("Запрос успешно выполнен!")
                     st.json(result)
                     st.session_state["last_job_id"] = result["job_id"]
 
-                    # Show next steps
+                    # Показать следующие шаги
                     st.info(f"""
-                    **Next steps:**
+                    **Следующие шаги:**
                     1. Job ID: `{result['job_id']}`
-                    2. Go to 'Results and Tiles' tab
-                    3. Paste the Job ID and click 'Refresh Status'
+                    2. Перейдите на вкладку 'Результаты и тайлы'
+                    3. Вставьте Job ID и нажмите 'Обновить статус'
                     """)
                 else:
-                    st.error(f"API error ({resp.status_code}): {resp.text}")
+                    st.error(f"Ошибка API ({resp.status_code}): {resp.text}")
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Ошибка: {e}")
 
-    # API endpoints documentation
-    st.subheader("Available Endpoints")
+    # Документация эндпоинтов API
+    st.subheader("Доступные эндпоинты")
     st.markdown(f"""
-    | Method | Endpoint | Description |
+    | Метод | Эндпоинт | Описание |
     |--------|----------|-------------|
-    | POST | `/api/process/upload` | Upload image for processing |
-    | GET | `/api/jobs/{{job_id}}` | Get job status |
-    | GET | `/api/jobs/{{job_id}}/tiles` | Get tiles list |
-    | GET | `/api/health` | Health check |
+    | POST | `/api/process/upload` | Загрузка изображения для обработки |
+    | GET | `/api/jobs/{{job_id}}` | Получить статус задачи |
+    | GET | `/api/jobs/{{job_id}}/tiles` | Получить список тайлов |
+    | GET | `/api/health` | Проверка работоспособности |
     """)
 
 with tab3:
-    st.header("Monitor and view results")
+    st.header("Мониторинг и просмотр результатов")
 
     job_input = st.text_input("Job ID", value=st.session_state.get("last_job_id", ""))
 
-    if st.button("Refresh Status", type="primary"):
+    if st.button("Обновить статус", type="primary"):
         if not job_input:
-            st.warning("Enter Job ID")
+            st.warning("Введите Job ID")
         else:
-            with st.spinner("Checking status..."):
+            with st.spinner("Проверка статуса..."):
                 try:
                     resp = check_status(job_input)
                     if resp.status_code == 200:
                         data = resp.json()
 
-                        # Display status prominently
+                        # Отображение статуса
                         status = data.get("status")
                         status_colors = {
                             "completed": "success",
@@ -174,25 +174,25 @@ with tab3:
                         status_color = status_colors.get(status, "info")
 
                         if status_color == "success":
-                            st.success(f"✅ Status: **{status.upper()}**")
+                            st.success(f"✅ Статус: **{status.upper()}**")
                         elif status_color == "error":
-                            st.error(f"❌ Status: **{status.upper()}**")
+                            st.error(f"❌ Статус: **{status.upper()}**")
                         elif status_color == "info":
-                            st.info(f"🔄 Status: **{status.upper()}**")
+                            st.info(f"🔄 Статус: **{status.upper()}**")
                         else:
-                            st.warning(f"⏳ Status: **{status.upper()}**")
+                            st.warning(f"⏳ Статус: **{status.upper()}**")
 
-                        # Show full response in expander
-                        with st.expander("Raw Response", expanded=False):
+                        # Показать полный ответ в раскрывающемся блоке
+                        with st.expander("Необработанный ответ", expanded=False):
                             st.json(data)
 
                         if status == "completed":
                             res_info = data.get("result", {})
 
                             if res_info.get("is_mock"):
-                                st.warning("ℹ️ Displaying mock results (test file detected)")
+                                st.warning("ℹ️ Отображаются тестовые результаты (обнаружен тестовый файл)")
 
-                            # Display HDFS paths if available
+                            # Отображение путей HDFS
                             hdfs_output = res_info.get("hdfs_output")
                             hdfs_tiles = res_info.get("hdfs_tiles_dir")
                             if hdfs_output:
@@ -203,22 +203,22 @@ with tab3:
                             job_dir = Path(DATA_DIR) / job_input
                             tiles_dir = job_dir / "tiles"
 
-                            # Display enhanced result
+                            # Отображение улучшенного результата
                             result_files = list(job_dir.glob("result*.png"))
                             if result_files:
-                                st.subheader("📸 Enhanced Result")
-                                st.image(str(result_files[0]), caption="Enhanced image", use_column_width=True)
+                                st.subheader("📸 Улучшенный результат")
+                                st.image(str(result_files[0]), caption="Улучшенное изображение", use_column_width=True)
 
-                                # Download button
+                                # Кнопка скачивания
                                 with open(result_files[0], "rb") as f:
                                     st.download_button(
-                                        label="📥 Download Result",
+                                        label="📥 Скачать результат",
                                         data=f.read(),
                                         file_name=result_files[0].name,
                                         mime="image/png"
                                     )
 
-                            # Display tiles in grid - проверяем все PNG файлы, не только с суффиксами
+                            # Отображение тайлов в сетке
                             if tiles_dir.exists():
                                 original_tiles = sorted(tiles_dir.glob("*_original.png"))
                                 enhanced_tiles = sorted(tiles_dir.glob("*_enhanced.png"))
@@ -226,16 +226,16 @@ with tab3:
                                 all_tiles = sorted(tiles_dir.glob("*.png"))
 
                                 if all_tiles:
-                                    st.subheader(f"🔲 Tiles ({len(all_tiles)} total)")
+                                    st.subheader(f"🔲 Тайлы (всего: {len(all_tiles)})")
 
                                     # Создаем вкладки в зависимости от типов тайлов
                                     tab_names = []
                                     if original_tiles:
-                                        tab_names.append("Original Tiles")
+                                        tab_names.append("Исходные тайлы")
                                     if enhanced_tiles:
-                                        tab_names.append("Enhanced Tiles")
+                                        tab_names.append("Улучшенные тайлы")
                                     if mock_tiles and not original_tiles and not enhanced_tiles:
-                                        tab_names.append("Mock Tiles")
+                                        tab_names.append("Тестовые тайлы")
 
                                     if len(tab_names) > 1:
                                         tile_tabs = st.tabs(tab_names)
@@ -270,33 +270,33 @@ with tab3:
                                             with cols[i % 4]:
                                                 st.image(str(t_path), caption=t_path.name, use_column_width=True)
 
-                                    # Tile statistics
-                                    st.subheader("📊 Tile Statistics")
+                                    # Статистика тайлов
+                                    st.subheader("📊 Статистика тайлов")
                                     col1, col2, col3 = st.columns(3)
                                     with col1:
-                                        st.metric("Total Tiles", len(all_tiles))
+                                        st.metric("Всего тайлов", len(all_tiles))
                                     with col2:
-                                        st.metric("Original Tiles", len(original_tiles))
+                                        st.metric("Исходные тайлы", len(original_tiles))
                                     with col3:
-                                        st.metric("Enhanced Tiles", len(enhanced_tiles))
+                                        st.metric("Улучшенные тайлы", len(enhanced_tiles))
 
                             elif status in ["pending", "processing", "STARTED", "PENDING"]:
-                                st.info("Processing in progress...")
+                                st.info("Обработка выполняется...")
                         elif status == "failed":
-                            st.error(f"❌ Error: {data.get('error', 'Unknown error')}")
+                            st.error(f"❌ Ошибка: {data.get('error', 'Неизвестная ошибка')}")
                             if "traceback" in data:
                                 with st.expander("Traceback"):
                                     st.code(data["traceback"])
                         else:
-                            st.info(f"⏳ Status: {status}")
+                            st.info(f"⏳ Статус: {status}")
                     else:
-                        st.error(f"Request error: {resp.status_code}")
+                        st.error(f"Ошибка запроса: {resp.status_code}")
                 except Exception as e:
-                    st.error(f"Failed to get status: {e}")
+                    st.error(f"Не удалось получить статус: {e}")
 
-    # Recent jobs section
+    # Секция последних задач
     if Path(DATA_DIR).exists():
-        st.subheader("📁 Recent Jobs")
+        st.subheader("📁 Последние задачи")
         job_dirs = sorted([d for d in Path(DATA_DIR).iterdir() if d.is_dir()], key=lambda x: x.stat().st_mtime, reverse=True)[:5]
         if job_dirs:
             for jd in job_dirs:
@@ -304,26 +304,24 @@ with tab3:
                 with col1:
                     st.write(f"`{jd.name}`")
                 with col2:
-                    if st.button("View", key=f"view_{jd.name}"):
+                    if st.button("Просмотреть", key=f"view_{jd.name}"):
                         st.session_state["last_job_id"] = jd.name
                         st.rerun()
         else:
-            st.info("No processed jobs found")
+            st.info("Обработанные задачи не найдены")
 
-st.sidebar.header("Info")
+st.sidebar.header("Информация")
 st.sidebar.markdown("""
-- **Upload**: Queues image processing task via Celery
-- **API**: Direct endpoint access with curl examples
-- **Results**: Status check, enhanced image and tiles preview
-- **Mock files**: Upload files with 'mock', 'test', 'demo' in name for placeholder results
-- **HDFS**: Results are also saved to HDFS for distributed storage
+- **Загрузка**: Постановка задачи обработки изображения через Celery
+- **API**: Прямой доступ к эндпоинтам с примерами curl
+- **Результаты**: Проверка статуса, просмотр улучшенного изображения и тайлов
 """)
 
 try:
     health = requests.get(f"{API_URL}/api/health", timeout=2)
     if health.status_code == 200:
-        st.sidebar.success("API: Active")
+        st.sidebar.success("API: Активен")
     else:
-        st.sidebar.error("API: Unexpected response")
+        st.sidebar.error("API: Неожиданный ответ")
 except Exception:
-    st.sidebar.error("API: Unreachable")
+    st.sidebar.error("API: Недоступен")
