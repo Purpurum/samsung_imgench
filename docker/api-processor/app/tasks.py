@@ -118,24 +118,62 @@ def _assemble_tiles(
     gaussian_sigma_ratio: float = 0.5
 ) -> np.ndarray:
     h, w, c = image_shape
+    
+    # Используем float32 для точности, но если память критична, можно попробовать float16
+    # Однако, при накоплении весов float16 может дать артефакты. 
+    # Оставим float32, но будем аккуратны с освобождением памяти.
     accum = np.zeros((h, w, c), dtype=np.float32)
     weight_sum = np.zeros((h, w), dtype=np.float32)
 
-    for tile in tiles:
+    log.info(f"Starting assembly for shape {image_shape} with {len(tiles)} tiles")
+
+    for i, tile in enumerate(tiles):
         th, tw = tile["height"], tile["width"]
+        
+        # Генерируем маску один раз
         mask = _make_weight_mask(th, tw, blending, gaussian_sigma_ratio)
 
         y0, y1 = tile["y"], tile["y"] + th
         x0, x1 = tile["x"], tile["x"] + tw
 
+        # Конвертируем данные тайла в float32
+        # Важно: tile["data"] скорее всего uint8. 
         tile_data = tile["data"].astype(np.float32)
+        
+        # Накопление
+        # Используем out=param где возможно, чтобы избежать лишних аллокаций, 
+        # но здесь операции сложные.
         accum[y0:y1, x0:x1, :] += tile_data * mask[:, :, None]
         weight_sum[y0:y1, x0:x1] += mask
+        
+        # ОСВОБОЖДАЕМ ПАМЯТЬ СРАЗУ ПОСЛЕ ИСПОЛЬЗОВАНИЯ ТАЙЛА
+        # Это критично для больших изображений
+        tile["data"] = None 
+        
+        # Периодический сборщик мусора, если тайлов очень много
+        if i % 50 == 0:
+            import gc
+            gc.collect()
 
+    log.info("Assembly complete, normalizing...")
+    
+    # Избегаем деления на ноль
     weight_sum = np.maximum(weight_sum, 1e-8)
+    
+    # Нормализация
+    # Расширяем размерность weight_sum для_broadcasting
     result = accum / weight_sum[:, :, None]
-    result = np.clip(result, 0, 255).astype(np.uint8)
+    
+    # Освобождаем аккумуляторы, они больше не нужны
+    del accum
+    del weight_sum
+    import gc
+    gc.collect()
 
+    # Конвертация обратно в uint8
+    result = np.clip(result, 0, 255).astype(np.uint8)
+    
+    log.info("Assembly finished")
     return result
 
 def _mock_enhance(tile_data: np.ndarray) -> np.ndarray:
@@ -153,8 +191,6 @@ def _spark_process_tiles(
     job_id: str
 ) -> List[Dict]:
     """Обрабатывает тайлы через Spark.
-
-    Возвращает обработанные тайлы. Если Spark недоступен — fallback на локальную обработку.
     """
     try:
         from pyspark.sql import SparkSession
@@ -178,21 +214,24 @@ def _spark_process_tiles(
 
     spark_cfg = full_config.get("spark", config.get("spark", {}))
 
+    # Критически важные настройки для предотвращения OOM
     builder = (
         SparkSession.builder
         .appName(spark_cfg.get("app_name", "SatlasEnhancement"))
         .master(spark_cfg.get("master", "spark://spark-master:7077"))
-        .config("spark.driver.memory", spark_cfg.get("driver_memory", "4g"))
-        .config("spark.driver.maxResultSize", spark_cfg.get("driver_maxResultSize", "0"))
-        .config("spark.executor.memory", spark_cfg.get("executor_memory", "2g"))
-        .config("spark.python.worker.reuse", str(spark_cfg.get("python_worker_reuse", True)).lower())
-        .config("spark.task.cpus", str(spark_cfg.get("task_cpus", 1)))
+        .config("spark.driver.memory", spark_cfg.get("driver_memory", "8g")) # Увеличено
+        .config("spark.driver.maxResultSize", spark_cfg.get("driver_maxResultSize", "4g")) # Ограничено, чтобы не убить драйвер
+        .config("spark.executor.memory", spark_cfg.get("executor_memory", "4g"))
+        .config("spark.python.worker.reuse", "true")
+        .config("spark.task.cpus", "1")
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") # Более эффективная сериализация
     )
 
     # Добавляем конфиги из get_spark_config
     for key, value in get_spark_config(full_config).items():
         builder = builder.config(key, value)
 
+    spark = None
     try:
         spark = builder.getOrCreate()
         log.info(f"Spark session created: {spark.sparkContext.appName}")
@@ -207,32 +246,68 @@ def _spark_process_tiles(
     try:
         use_mock = config.get("model", {}).get("use_mock", True)
 
+        # Определяем функцию обработки внутри, чтобы она была чистой
+        # Важно: мы не должны захватывать большие объекты из внешнего скоупа
         def process_tile(tile_dict):
             """Функция обработки одного тайла на воркере"""
-            tile_data = tile_dict["data"]
+            # tile_dict приходит сериализованным. 
+            # Внимание: передача numpy массивов в RDD неэффективна.
+            # Для продакшена лучше сохранять тайлы в файлы и передавать пути.
+            
+            data = tile_dict["data"]
+            # Если данные пришли как list (при сериализации json/pickle), конвертируем обратно
+            if not isinstance(data, np.ndarray):
+                data = np.array(data, dtype=np.uint8)
 
             if use_mock:
-                enhanced = _mock_enhance(tile_data)
+                # Импортируем внутри, чтобы избежать проблем с сериализацией контекста
+                from PIL import Image, ImageFilter
+                img = Image.fromarray(data, mode="RGB")
+                denoised = img.filter(ImageFilter.MedianFilter(size=3))
+                enhanced = denoised.filter(
+                    ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3)
+                )
+                result_data = np.asarray(enhanced, dtype=np.uint8)
             else:
-                # Здесь должна быть реальная модель
-                enhanced = tile_data
+                result_data = data # Placeholder for real model
 
-            return {**tile_dict, "data": enhanced}
+            # Возвращаем словарь, но данные лучше хранить в компактном виде
+            # Однако, для совместимости с вашим кодом оставляем структуру
+            return {
+                "index": tile_dict["index"],
+                "x": tile_dict["x"],
+                "y": tile_dict["y"],
+                "width": tile_dict["width"],
+                "height": tile_dict["height"],
+                "data": result_data
+            }
 
-        num_partitions = spark_cfg.get("num_partitions", 2)
+        num_partitions = spark_cfg.get("num_partitions", 4) # Увеличено кол-во партиций для параллелизма
+        
+        # ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ:
+        # parallelize с большими данными - узкое место.
+        # Если приложение падает здесь, значит драйвер не может разослать данные.
+        # Временное решение: увеличить память драйвера в docker-compose.
         rdd = sc.parallelize(tiles, numSlices=num_partitions)
-        processed = rdd.map(process_tile).collect()
+        
+        processed_rdd = rdd.map(process_tile)
+        
+        # collect() забирает все данные в память драйвера.
+        # Если данных много > памяти драйвера -> CRASH.
+        processed = processed_rdd.collect()
 
         log.info(f"Spark processed {len(processed)} tiles")
         return processed
 
     except Exception as e:
         log.error(f"Spark processing failed: {e}, falling back to local")
+        # Fallback
         for tile in tiles:
             tile["data"] = _mock_enhance(tile["data"])
         return tiles
     finally:
-        spark.stop()
+        if spark:
+            spark.stop()
 
 @celery_app.task(bind=True, name="app.tasks.process_uploaded_image")
 def process_uploaded_image(
@@ -243,6 +318,8 @@ def process_uploaded_image(
     params: Optional[Dict] = None
 ):
     """Celery задача для обработки изображения с использованием Spark и HDFS"""
+    import gc
+    
     params = params or {}
 
     out_dir = Path(os.getenv("PROCESSING_OUT_DIR", "/data/processed")) / job_id
@@ -281,10 +358,10 @@ def process_uploaded_image(
         "spark": {
             "app_name": full_config.get("spark", {}).get("app_name", "SatlasEnhancement"),
             "master": full_config.get("spark", {}).get("master", "spark://spark-master:7077"),
-            "driver_memory": full_config.get("spark", {}).get("driver_memory", "4g"),
-            "driver_maxResultSize": full_config.get("spark", {}).get("driver_maxResultSize", "0"),
-            "executor_memory": full_config.get("spark", {}).get("executor_memory", "2g"),
-            "num_partitions": full_config.get("spark", {}).get("num_partitions", 2),
+            "driver_memory": full_config.get("spark", {}).get("driver_memory", "8g"),
+            "driver_maxResultSize": full_config.get("spark", {}).get("driver_maxResultSize", "4g"),
+            "executor_memory": full_config.get("spark", {}).get("executor_memory", "4g"),
+            "num_partitions": full_config.get("spark", {}).get("num_partitions", 4),
             "task_cpus": full_config.get("spark", {}).get("task_cpus", 1),
             "python_worker_reuse": full_config.get("spark", {}).get("python_worker_reuse", True)
         },
@@ -349,44 +426,61 @@ def process_uploaded_image(
             overlap=config["image"]["overlap"]
         )
 
+        log.info(f"Split image into {len(tiles)} tiles")
+
         # Сохраняем оригинальные тайлы локально и в HDFS
+        # Освобождаем память после сохранения, если возможно, но нам нужны данные для Spark
         for idx, tile in enumerate(tiles):
             tile_path = tiles_dir / f"tile_{tile['index']:03d}_original.png"
-            Image.fromarray(tile["data"]).save(tile_path)
-
+            # Конвертируем в Image только для сохранения, не храним объект долго
+            img = Image.fromarray(tile["data"])
+            img.save(tile_path)
+            
             if hdfs_client:
                 try:
                     hdfs_client.put_image(tile["data"], f"{hdfs_output_path}/tiles/tile_{tile['index']:03d}_original.png")
-                    del tile 
-                    if idx % 10 == 0:
-                        gc.collect()
                 except Exception as e:
                     log.warning(f"Failed to save original tile to HDFS: {e}")
+            
+            # Не делаем del tile["data"] здесь, так как оно нужно для Spark!
+            # Если памяти мало, придется сохранять на диск и читать в Spark по путям.
+            # Сейчас предполагаем, что памяти хватает.
 
         # Обрабатываем тайлы через Spark
         processed_tiles = _spark_process_tiles(tiles, config, job_id)
 
+        # Освобождаем исходные тайлы, они больше не нужны
+        # Это важно для экономии памяти перед сборкой
+        for t in tiles:
+            t["data"] = None
+        import gc
+        gc.collect()
+
+
         # Сохраняем обработанные тайлы локально и в HDFS
-        for idx, tile in enumerate(tiles):
+        for idx, tile in enumerate(processed_tiles):
             tile_path = tiles_dir / f"tile_{tile['index']:03d}_enhanced.png"
             Image.fromarray(tile["data"]).save(tile_path)
 
             if hdfs_client:
                 try:
                     hdfs_client.put_image(tile["data"], f"{hdfs_output_path}/tiles/tile_{tile['index']:03d}_enhanced.png")
-                    del tile 
-                    if idx % 10 == 0:
-                        gc.collect()
                 except Exception as e:
                     log.warning(f"Failed to save enhanced tile to HDFS: {e}")
 
-        # Собираем изображение
         assembled = _assemble_tiles(
             processed_tiles,
             orig_shape,
             blending=config["postprocessing"]["blending"],
             gaussian_sigma_ratio=config["postprocessing"]["gaussian_sigma_ratio"]
         )
+        
+        # Теперь можно очистить processed_tiles
+        for t in processed_tiles:
+            t["data"] = None
+        import gc
+        gc.collect()
+
 
         result_path = out_dir / "result_enhanced.png"
         Image.fromarray(assembled).save(result_path)

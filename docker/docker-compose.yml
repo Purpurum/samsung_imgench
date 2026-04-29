@@ -90,8 +90,8 @@ services:
     hostname: spark-worker-1
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=4
+      - SPARK_WORKER_MEMORY=8G
       - SPARK_WORKER_WEBUI_PORT=8081
     ports:
       - "8081:8081"
@@ -115,8 +115,8 @@ services:
     hostname: spark-worker-2
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=4
+      - SPARK_WORKER_MEMORY=8G
       - SPARK_WORKER_WEBUI_PORT=8082
     ports:
       - "8082:8082"
@@ -229,6 +229,8 @@ services:
       - PYSPARK_PYTHON=python3
       - ARROW_LIBHDFS_DIR=/opt/hadoop/lib/native
       - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_DRIVER_MEMORY=8g
+      - SPARK_EXECUTOR_MEMORY=4g
     volumes:
       - shared_data:/data/processed
       - ../src:/app/src:ro
@@ -246,7 +248,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 12G
           cpus: '4'
 
   frontend:

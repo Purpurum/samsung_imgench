@@ -33,7 +33,7 @@
 
 Оптимизации:
 
-    - mapPartitions вместо map: загрузка модели 1× на партицию, а не на элемент
+    - mapPartitions вместо map: загрузка модели 1x на партицию, а не на элемент
     - Потоковый батчинг: обработка частями, без загрузки всей партиции в память
     - Thread-safe кеш модели: защита от race condition при многопоточных исполнителях
     - Консистентная структура метаданных: все поля присутствуют даже при ошибках
@@ -48,6 +48,7 @@ import time
 import zlib
 import pickle
 import threading
+import gc
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Any
@@ -141,7 +142,7 @@ def _process_partition_factory(model_cfg_dict: dict, spark_cfg: dict):
                         except Exception:
                             yield m, d  # исходный как fallback
                 finally:
-                    # 🔥 ГАРАНТИРОВАННАЯ очистка независимо от успеха/ошибки
+                    # ГАРАНТИРОВАННАЯ очистка независимо от успеха/ошибки
                     batch_metas.clear()
                     batch_datas.clear()
 
@@ -213,8 +214,6 @@ def run_enhancement_pipeline(
     Returns:
         Словарь с метриками и путями в HDFS (консистентная структура).
     """
-    import gc  # Для принудительной сборки мусора
-
     t_start = time.time()
     cfg = load_config(config_path)
     logger = setup_logging(
@@ -301,7 +300,7 @@ def run_enhancement_pipeline(
         # Мониторинг памяти перед инференсом
         import psutil, os
         process = psutil.Process(os.getpid())
-        logger.info(f"💾 Память ДО инференса: {process.memory_info().rss / 1024**2:.1f} MB")
+        logger.info(f"Память ДО инференса: {process.memory_info().rss / 1024**2:.1f} MB")
 
         t_infer = time.time()
 
@@ -313,7 +312,7 @@ def run_enhancement_pipeline(
         # Собираем результаты
         processed_serialized = processed_rdd.collect()
 
-        # 🔥 КРИТИЧНО: Немедленно освобождаем RDD и исходные данные
+        # КРИТИЧНО: Немедленно освобождаем RDD и исходные данные
         del processed_rdd
         del rdd
         del tile_items
@@ -324,12 +323,12 @@ def run_enhancement_pipeline(
             "Инференс завершён: %d тайлов за %.2f сек (%.2f тайлов/сек)",
             len(processed_serialized), infer_time, len(processed_serialized) / max(infer_time, 1e-6),
         )
-        logger.info(f"💾 Память ПОСЛЕ collect: {process.memory_info().rss / 1024**2:.1f} MB")
+        logger.info(f"Память ПОСЛЕ collect: {process.memory_info().rss / 1024**2:.1f} MB")
 
         # 5) Восстанавливаем объекты Tile для сборки
         processed_tiles: List[Tile] = []
         for meta, data_bytes in processed_serialized:
-            # 🔥 ДЕСЕРИАЛИЗУЕМ байты обратно в numpy-массив
+            # ДЕСЕРИАЛИЗУЕМ байты обратно в numpy-массив
             data = _deserialize_array(data_bytes, compress=compress_arrays)
             processed_tiles.append(
                 Tile(
@@ -349,48 +348,63 @@ def run_enhancement_pipeline(
         # Сортируем по исходному индексу для детерминированности
         processed_tiles.sort(key=lambda t: t.index)
 
-# 6) Сборка изображения
-        logger.info(f"💾 Память ПЕРЕД сборкой: {process.memory_info().rss / 1024**2:.1f} MB")
+        # 6) Сборка изображения
+        logger.info(f"Память ПЕРЕД сборкой: {process.memory_info().rss / 1024**2:.1f} MB")
         enhanced = assemble_tiles(
             processed_tiles,
             image_shape=orig_shape,
             blending=cfg["postprocessing"]["blending"],
             gaussian_sigma_ratio=cfg["postprocessing"]["gaussian_sigma_ratio"],
         )
-        logger.info(f"💾 Память ПОСЛЕ сборки: {process.memory_info().rss / 1024**2:.1f} MB")
+        logger.info(f"Память ПОСЛЕ сборки: {process.memory_info().rss / 1024**2:.1f} MB")
 
-        # 🔥 Освобождаем списки тайлов ПЕРЕД загрузкой оригинала для метрик
-        total_tiles = len(tiles)
+        # Сохраняем количество тайлов до очистки
+        total_tiles = len(processed_tiles)
 
-        # Освобождаем память
-        del tiles, processed_tiles
+        # Освобождаем память тайлов
+        del tiles
+        del processed_tiles
         gc.collect()
-        logger.info(f"💾 Память после очистки тайлов: {process.memory_info().rss / 1024**2:.1f} MB")
+        logger.info(f"Память после очистки тайлов: {process.memory_info().rss / 1024**2:.1f} MB")
 
-        # 📊 Расчёт метрик (с защитой от OOM)
+        # Инициализируем переменные для метрик
+        metric_psnr = None
+        metric_ssim = None
+        # Используем shape из этапа тайлинга, так как он гарантированно доступен
+        original_shape_for_meta = list(orig_shape)
+
+        # Расчёт метрик (с защитой от OOM)
         try:
             from PIL import Image as PILImage
 
-            # Вариант А: Загружаем оригинал с явным приведением к uint8 (экономит память)
+            # Загружаем оригинал с явным приведением к uint8 (экономит память)
             with PILImage.open(src_path) as img:
                 # Конвертируем сразу в numpy без промежуточного копирования
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 original_full = np.asarray(img, dtype=np.uint8)
 
+            # Обновляем shape для метаданных на основе реального файла
+            original_shape_for_meta = list(original_full.shape)
+
             # Обрезаем до общего размера (если формы разошлись)
             h = min(original_full.shape[0], enhanced.shape[0])
             w = min(original_full.shape[1], enhanced.shape[1])
 
-            # 🔥 Опционально: считаем метрики на даунскейле для экономии памяти
-            # Если изображение >50 Мп — уменьшаем в 2× для метрик
+            # Опционально: считаем метрики на даунскейле для экономии памяти
+            # Если изображение >50 Мп — уменьшаем в 2 раза для метрик
             if h * w > 50_000_000:
-                logger.info("📉 Изображение большое, считаем метрики на даунскейле 2×")
-                from cv2 import resize, INTER_AREA
-                orig_small = resize(original_full[:h, :w], (w//2, h//2), interpolation=INTER_AREA)
-                enh_small = resize(enhanced[:h, :w], (w//2, h//2), interpolation=INTER_AREA)
-                metric_psnr = psnr(orig_small, enh_small)
-                metric_ssim = ssim_simple(orig_small, enh_small)
+                logger.info("Изображение большое, считаем метрики на даунскейле 2x")
+                try:
+                    from cv2 import resize, INTER_AREA
+                    orig_small = resize(original_full[:h, :w], (w//2, h//2), interpolation=INTER_AREA)
+                    enh_small = resize(enhanced[:h, :w], (w//2, h//2), interpolation=INTER_AREA)
+                    metric_psnr = psnr(orig_small, enh_small)
+                    metric_ssim = ssim_simple(orig_small, enh_small)
+                except ImportError:
+                    logger.warning("OpenCV not found, calculating metrics on full resolution (risk of OOM)")
+                    metric_psnr = psnr(original_full[:h, :w], enhanced[:h, :w])
+                    metric_ssim = ssim_simple(original_full[:h, :w], enhanced[:h, :w])
             else:
                 metric_psnr = psnr(original_full[:h, :w], enhanced[:h, :w])
                 metric_ssim = ssim_simple(original_full[:h, :w], enhanced[:h, :w])
@@ -402,8 +416,7 @@ def run_enhancement_pipeline(
             gc.collect()
 
         except Exception as e:
-            logger.warning("⚠️ Не удалось рассчитать метрики: %s, пропускаем", e)
-            metric_psnr = metric_ssim = None
+            logger.warning("Не удалось рассчитать метрики: %s, пропускаем", e)
 
         # 7) Сохранение в HDFS
         hcfg = HDFSConfig(
@@ -426,10 +439,11 @@ def run_enhancement_pipeline(
         meta_hdfs = f"{hcfg.metadata_dir}/{date_str}/{image_id}.json"
 
         # Инициализируем метаданные (полная структура)
+        # Используем original_shape_for_meta, который всегда определен
         metadata = _create_empty_metadata(
             image_id=image_id,
             config=cfg,
-            original_shape=list(original_full.shape),
+            original_shape=original_shape_for_meta,
         )
 
         try:
@@ -460,6 +474,7 @@ def run_enhancement_pipeline(
             local_output_dir.mkdir(parents=True, exist_ok=True)
 
             local_path = local_output_dir / f"{image_id}_enhanced.png"
+            from PIL import Image as PILImage
             PILImage.fromarray(enhanced).save(local_path)
 
             metadata.update({
@@ -507,10 +522,10 @@ def main() -> int:
     args = _parse_args()
     try:
         if args.dry_run:
-            print(f"🔍 Dry run: валидация {args.image}")
+            print(f"Dry run: валидация {args.image}")
             cfg = load_config(args.config)
             validate_image(args.image, cfg["image"])
-            print("✅ Валидация пройдена")
+            print("Валидация пройдена")
             return 0
 
         result = run_enhancement_pipeline(
@@ -519,21 +534,21 @@ def main() -> int:
             config_path=args.config,
         )
         print("=" * 60)
-        print("🎉 Пайплайн завершён успешно.")
+        print("Пайплайн завершён успешно.")
         print(f"image_id      : {result.get('image_id')}")
         print(f"enhanced_path : {result.get('enhanced_path')}")
         print(f"metrics       : PSNR={result['metrics']['psnr_db']:.2f} dB, "
               f"SSIM={result['metrics']['ssim']:.4f}")
         print(f"total_time    : {result.get('total_time_sec')} сек")
         if result.get('error'):
-            print(f"⚠️  warning     : {result['error']}")
+            print(f"warning     : {result['error']}")
         if result.get('local_fallback'):
-            print("📁 fallback    : локальное сохранение")
+            print("fallback    : локальное сохранение")
         print("=" * 60)
         return 0
 
     except Exception as e:
-        log.exception("❌ Пайплайн упал: %s", e)
+        log.exception("Пайплайн упал: %s", e)
         return 1
 
 

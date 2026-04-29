@@ -16,8 +16,8 @@ image:
   max_size: 16384
 
 model:
-  name: "satlaspretrain_base"
-  path: "/models/satlaspretrain_base.pt"
+  name: "sentinel1_swinb_si"
+  path: "/models/sentinel1_swinb_si.pt"
   device: "cpu"
   # КРИТИЧНО: уменьшено до 2 для снижения пика памяти при инференсе
   batch_size: 2
