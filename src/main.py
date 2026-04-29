@@ -99,7 +99,7 @@ def _serialize_array(arr: np.ndarray, compress: bool = True) -> bytes:
     return zlib.compress(data, level=6) if compress else data
 
 
-def _deserialize_array( bytes, compress: bool = True) -> np.ndarray:
+def _deserialize_array(data: bytes, compress: bool = True) -> np.ndarray:
     """Десериализация numpy-массива с опциональным сжатием."""
     raw = zlib.decompress(data) if compress else data
     return pickle.loads(raw)

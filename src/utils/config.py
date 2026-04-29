@@ -3,12 +3,12 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union  # ← добавили Union и Optional
 
 import yaml
 
 
-def load_config(config_path: str | Path) -> Dict[str, Any]:
+def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:  # ← Union вместо |
     """Загружает YAML-конфигурацию из файла.
 
     Args:
@@ -50,8 +50,8 @@ def get_spark_config(config: Dict[str, Any]) -> Dict[str, str]:
 
 def setup_logging(
     level: str = "INFO",
-    fmt: str | None = None,
-    log_dir: str | Path | None = None,
+    fmt: Optional[str] = None,  # ← Optional вместо str | None
+    log_dir: Optional[Union[str, Path]] = None,  # ← Union + Optional
     app_name: str = "satlas",
 ) -> logging.Logger:
     """Настраивает корневой логгер: вывод в stdout + опционально в файл.

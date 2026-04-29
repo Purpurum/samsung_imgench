@@ -4,6 +4,7 @@ import time
 import logging
 import numpy as np
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from .celery_worker import celery_app
@@ -349,13 +350,16 @@ def process_uploaded_image(
         )
 
         # Сохраняем оригинальные тайлы локально и в HDFS
-        for tile in tiles:
+        for idx, tile in enumerate(tiles):
             tile_path = tiles_dir / f"tile_{tile['index']:03d}_original.png"
             Image.fromarray(tile["data"]).save(tile_path)
 
             if hdfs_client:
                 try:
                     hdfs_client.put_image(tile["data"], f"{hdfs_output_path}/tiles/tile_{tile['index']:03d}_original.png")
+                    del tile 
+                    if idx % 10 == 0:
+                        gc.collect()
                 except Exception as e:
                     log.warning(f"Failed to save original tile to HDFS: {e}")
 
@@ -363,13 +367,16 @@ def process_uploaded_image(
         processed_tiles = _spark_process_tiles(tiles, config, job_id)
 
         # Сохраняем обработанные тайлы локально и в HDFS
-        for tile in processed_tiles:
+        for idx, tile in enumerate(tiles):
             tile_path = tiles_dir / f"tile_{tile['index']:03d}_enhanced.png"
             Image.fromarray(tile["data"]).save(tile_path)
 
             if hdfs_client:
                 try:
                     hdfs_client.put_image(tile["data"], f"{hdfs_output_path}/tiles/tile_{tile['index']:03d}_enhanced.png")
+                    del tile 
+                    if idx % 10 == 0:
+                        gc.collect()
                 except Exception as e:
                     log.warning(f"Failed to save enhanced tile to HDFS: {e}")
 

@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union, Dict, Any, List
+from typing import Optional, Union, Dict, Any, List, Tuple
 import numpy as np
 from PIL import Image
 
@@ -116,7 +116,7 @@ class HDFSClient:
         self._access_logs.clear()
 
     @staticmethod
-    def _parse_root(root: str) -> tuple[str, int]:
+    def _parse_root(root: str) -> Tuple[str, int]:
         without_scheme = root.replace("hdfs://", "")
         host, _, port = without_scheme.partition(":")
         return host, int(port) if port else 9000
@@ -175,25 +175,25 @@ class HDFSClient:
         Image.fromarray(image).save(buf, format=fmt)
         self.put_bytes(buf.getvalue(), hdfs_path)
 
-    def put_bytes(self,  bytes, hdfs_path: str) -> None:
+    def put_bytes(self, data: bytes, hdfs_path: str) -> None:  # ← переименовали параметр в 'data'
         t0 = time.time()
         try:
             fs = self._get_fs()
             self.mkdirs(str(Path(hdfs_path).parent))
             if fs is not None:
                 with fs.open_output_stream(hdfs_path) as f:
-                    f.write(data)
+                    f.write(data)  # ← теперь 'data' определена
                 log.info("Written to HDFS: %s (%d bytes)", hdfs_path, len(data))
             else:
                 tmp = Path(f"/tmp/hdfs_upload_{os.getpid()}_{Path(hdfs_path).name}")
-                tmp.write_bytes(data)
+                tmp.write_bytes(data)  # ← теперь 'data' определена
                 try:
                     self._cli(["hdfs", "dfs", "-put", "-f", str(tmp), self._full_uri(hdfs_path)])
                 finally:
                     tmp.unlink(missing_ok=True)
             self._log_access("write", hdfs_path, size_bytes=len(data), duration_ms=(time.time() - t0) * 1000, success=True)
         except Exception as e:
-            self._log_access("write", hdfs_path, size_bytes=len(data) if 'data' in locals() else None,
+            self._log_access("write", hdfs_path, size_bytes=len(data),  # ← упростили, 'data' всегда определена
                            duration_ms=(time.time() - t0) * 1000, success=False, error=str(e))
             raise
 
@@ -216,7 +216,7 @@ class HDFSClient:
                            duration_ms=(time.time() - t0) * 1000, success=False, error=str(e))
             raise
 
-    def put_json(self, payload: dict, hdfs_path: str) -> None:
+    def put_json(self, payload: Dict, hdfs_path: str) -> None:
         data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         self.put_bytes(data, hdfs_path)
 
@@ -246,7 +246,7 @@ class HDFSClient:
         return f"{self.cfg.root}{hdfs_path}"
 
     @staticmethod
-    def _cli(args: list[str]) -> None:
+    def _cli(args: List[str]) -> None:
         log.debug("HDFS CLI: %s", " ".join(args))
         r = subprocess.run(args, capture_output=True, text=True)
         if r.returncode != 0:
